@@ -8,6 +8,7 @@ namespace YtGui
     {
         public string YtDlpPath { get; set; } = string.Empty;
         public string FfmpegPath { get; set; } = string.Empty;
+        public string TwitchChatToolPath { get; set; } = string.Empty;
         public string DefaultCookiePath { get; set; } = string.Empty;
         public string OutputDirectory { get; set; } = string.Empty;
         public bool UseNoPart { get; set; } = true;

@@ -28,6 +28,7 @@ namespace YtGui
         public double ProgressPercent { get; set; } = -1;
         public bool IsLive { get; set; }
         public bool LiveFromStart { get; set; }
+        public bool DownloadChatReplay { get; set; }
         public CancellationTokenSource? ActiveCts { get; set; }
         public int ActiveProcPid { get; set; }
     }
@@ -54,6 +55,7 @@ namespace YtGui
         readonly Button btnSettings = new() { Text = "設定", AutoSize = true };
         readonly CheckBox chkLive = new() { Text = "ライブ", AutoSize = true };
         readonly CheckBox chkLiveFromStart = new() { Text = "配信開始から録画 (--live-from-start)", AutoSize = true };
+        readonly CheckBox chkChatReplay = new() { Text = "チャットリプレイ取得", AutoSize = true };
         readonly CheckBox chkAudioOnly = new() { Text = "音声のみ抽出", AutoSize = true };
         readonly ComboBox cbCodec = new() { Width = 80, DropDownStyle = ComboBoxStyle.DropDownList };
         readonly TextBox tbCookie = new();
@@ -62,6 +64,7 @@ namespace YtGui
         readonly Button btnTopMost = new() { Text = "常に最前面: OFF", AutoSize = true };
         readonly HashSet<Control> selectionActionButtons = new();
         readonly System.Windows.Forms.Timer progressUiTimer = new() { Interval = 1000 };
+        int chatReplayMarqueeTick;
 
         readonly Queue<QueueItem> queue = new();
         readonly List<QueueItem> allItems = new();
@@ -110,6 +113,7 @@ namespace YtGui
             optRow.Controls.Add(cbCodec);
             optRow.Controls.Add(chkLive);
             optRow.Controls.Add(chkLiveFromStart);
+            optRow.Controls.Add(chkChatReplay);
             optRow.Controls.Add(tbCookie);
             optRow.Controls.Add(btnBrowseCookie);
 
@@ -158,8 +162,12 @@ namespace YtGui
             progressUiTimer.Tick += (_, _) =>
             {
                 bool any;
-                lock (queueLock) any = allItems.Exists(x => x.Status == "ダウンロード中");
-                if (any) lvQueue.Invalidate();
+                lock (queueLock) any = allItems.Exists(x => x.Status is "ダウンロード中" or "チャット取得中");
+                if (any)
+                {
+                    chatReplayMarqueeTick++;
+                    lvQueue.Invalidate();
+                }
             };
             progressUiTimer.Start();
 
@@ -384,6 +392,7 @@ namespace YtGui
         async Task<QueueItem?> BuildQueueItemAsync(string url, bool isLive, bool liveFromStart, string? knownTitle, bool applyDefaultFormat)
         {
             var audioOnly = chkAudioOnly.Checked;
+            var downloadChatReplay = chkChatReplay.Checked;
             var codec = cbCodec.SelectedItem?.ToString() ?? "mp3";
             var cookie = CookieFromUi();
             string selectedFormat;
@@ -437,7 +446,8 @@ namespace YtGui
                 Title = string.IsNullOrWhiteSpace(title) ? url : title,
                 Status = "ダウンロード待ち",
                 IsLive = isLive,
-                LiveFromStart = liveFromStart
+                LiveFromStart = liveFromStart,
+                DownloadChatReplay = downloadChatReplay
             };
 
             var dir = string.IsNullOrWhiteSpace(settings.OutputDirectory) ? Directory.GetCurrentDirectory() : settings.OutputDirectory;
@@ -538,7 +548,33 @@ namespace YtGui
             using var backgroundBrush = new SolidBrush(background);
             e.Graphics.FillRectangle(backgroundBrush, e.Bounds);
 
-            if (e.ColumnIndex != 1 || listItem.Tag is not QueueItem item || item.ProgressPercent < 0)
+            if (e.ColumnIndex != 1 || listItem.Tag is not QueueItem item)
+            {
+                TextRenderer.DrawText(e.Graphics, subItem.Text, lvQueue.Font, e.Bounds, foreground,
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+                return;
+            }
+
+            if (item.Status == "チャット取得中")
+            {
+                var marqueeBar = Rectangle.Inflate(e.Bounds, -4, -4);
+                using var marqueeTrackBrush = new SolidBrush(selected ? Color.FromArgb(90, Color.White) : Color.Gainsboro);
+                e.Graphics.FillRectangle(marqueeTrackBrush, marqueeBar);
+                // 実進捗が取得できないため（チャットツールの出力形式が未確認）、往復するブロックで
+                // 「動いている」ことだけを示す不定進捗（indeterminate）表示にする。
+                var blockWidth = Math.Max(20, marqueeBar.Width / 5);
+                var travel = Math.Max(1, marqueeBar.Width - blockWidth);
+                var pos = chatReplayMarqueeTick % (travel * 2);
+                if (pos > travel) pos = travel * 2 - pos;
+                using var marqueeBrush = new SolidBrush(selected ? Color.FromArgb(190, Color.White) : Color.FromArgb(45, 135, 70));
+                e.Graphics.FillRectangle(marqueeBrush, new Rectangle(marqueeBar.X + pos, marqueeBar.Y, blockWidth, marqueeBar.Height));
+                e.Graphics.DrawRectangle(SystemPens.ControlDark, marqueeBar);
+                TextRenderer.DrawText(e.Graphics, subItem.Text, lvQueue.Font, marqueeBar, foreground,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+                return;
+            }
+
+            if (item.ProgressPercent < 0)
             {
                 TextRenderer.DrawText(e.Graphics, subItem.Text, lvQueue.Font, e.Bounds, foreground,
                     TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
@@ -742,6 +778,7 @@ namespace YtGui
                         item.ProgressPercent = 100;
                     }
                     RefreshQueueDisplay();
+                    await ProcessChatReplayIfRequestedAsync(item, token);
                 }
                 catch (OperationCanceledException)
                 {
@@ -816,6 +853,8 @@ namespace YtGui
             args.Add("--embed-thumbnail");
             args.Add("--add-metadata");
             if (settings.UseNoPart) args.Add("--no-part");
+            if (item.DownloadChatReplay && YtDlp.DetermineSiteKind(item.Url) == SiteKind.YouTube)
+                args.Add("--write-live-chat");
 
             if (!string.IsNullOrWhiteSpace(item.OutputFilePath))
             {
@@ -903,6 +942,77 @@ namespace YtGui
             }
 
             return lastExit;
+        }
+
+        async Task ProcessChatReplayIfRequestedAsync(QueueItem item, CancellationToken token)
+        {
+            if (!item.DownloadChatReplay) return;
+
+            var siteKind = YtDlp.DetermineSiteKind(item.Url);
+            if (siteKind == SiteKind.YouTube) return; // RunYtDlpAsync内の --write-live-chat で完結済み
+
+            if (siteKind != SiteKind.Twitch)
+            {
+                UpdateStatus("チャット取得をスキップしました（非対応のサイト種別）: " + item.Url);
+                return;
+            }
+
+            lock (queueLock)
+            {
+                if (!allItems.Contains(item)) return;
+                item.Status = "チャット取得中";
+            }
+            RefreshQueueDisplay();
+            try
+            {
+                var chatPath = YtDlp.BuildChatReplayOutputPath(item.OutputFilePath);
+                var (exit, stderr) = await RunTwitchChatDownloadAsync(item, chatPath, token);
+                UpdateStatus(exit == 0
+                    ? "チャットリプレイを取得しました: " + chatPath
+                    : $"チャット取得に失敗しました (exit {exit}): {stderr.Trim()}");
+            }
+            catch (OperationCanceledException)
+            {
+                UpdateStatus("チャット取得を中止しました。");
+            }
+            catch (Exception ex)
+            {
+                UpdateStatus("チャット取得でエラー: " + ex.Message);
+            }
+            finally
+            {
+                lock (queueLock)
+                {
+                    if (allItems.Contains(item)) item.Status = "ダウンロード完了";
+                }
+                RefreshQueueDisplay();
+            }
+        }
+
+        async Task<(int ExitCode, string Stderr)> RunTwitchChatDownloadAsync(QueueItem item, string outputPath, CancellationToken token)
+        {
+            var args = new List<string> { "chatdownload", "--id", item.Url, "-o", outputPath };
+            var psi = YtDlp.CreateTwitchChatToolStartInfo(args, settings);
+            using var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
+            var stderrBuffer = new StringBuilder();
+            proc.ErrorDataReceived += (_, e) => { if (e.Data != null) stderrBuffer.AppendLine(e.Data); };
+
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+            try
+            {
+                item.ActiveCts = linkedCts;
+                using var reg = linkedCts.Token.Register(() => { try { if (!proc.HasExited) proc.Kill(true); } catch { } });
+                proc.Start();
+                try { item.ActiveProcPid = proc.Id; } catch { item.ActiveProcPid = 0; }
+                proc.BeginErrorReadLine();
+                await proc.WaitForExitAsync(linkedCts.Token);
+                return (proc.ExitCode, stderrBuffer.ToString());
+            }
+            finally
+            {
+                item.ActiveCts = null;
+                item.ActiveProcPid = 0;
+            }
         }
     }
 }

@@ -60,6 +60,22 @@ namespace YtGui
             return (uri.ToString(), false);
         }
 
+        public static SiteKind DetermineSiteKind(string url)
+        {
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
+                (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+                return SiteKind.Unsupported;
+
+            var host = uri.Host.ToLowerInvariant();
+            if (host.StartsWith("www.")) host = host[4..];
+
+            if (host is "youtube.com" or "m.youtube.com" or "music.youtube.com" or "youtu.be" || host.EndsWith(".youtube.com"))
+                return SiteKind.YouTube;
+            if (host is "twitch.tv" || host.EndsWith(".twitch.tv"))
+                return SiteKind.Twitch;
+            return SiteKind.Unsupported;
+        }
+
         public static async Task<VideoInfo> GetVideoInfoAsync(string url, string? cookie, Settings settings)
         {
             var args = new List<string> { "-J", "--no-playlist", "--no-warnings", "--encoding", "utf-8", "-o", "%(title)s.%(ext)s", url };
@@ -142,6 +158,14 @@ namespace YtGui
             }
         }
 
+        public static string BuildChatReplayOutputPath(string videoOutputPath)
+        {
+            var dir = Path.GetDirectoryName(videoOutputPath);
+            if (string.IsNullOrWhiteSpace(dir)) dir = Directory.GetCurrentDirectory();
+            var baseName = Path.GetFileNameWithoutExtension(videoOutputPath);
+            return MakeUniquePath(Path.Combine(dir, baseName + ".chat_replay.json"));
+        }
+
         public static string SanitizeFileName(string name)
         {
             if (string.IsNullOrWhiteSpace(name)) return "video";
@@ -195,6 +219,22 @@ namespace YtGui
                 psi.ArgumentList.Add("--cookies");
                 psi.ArgumentList.Add(cookieToUse);
             }
+            foreach (var arg in args) psi.ArgumentList.Add(arg);
+            return psi;
+        }
+
+        public static ProcessStartInfo CreateTwitchChatToolStartInfo(IEnumerable<string> args, Settings current)
+        {
+            if (string.IsNullOrWhiteSpace(current.TwitchChatToolPath))
+                throw new InvalidOperationException("Twitchチャット取得ツールのパスが設定されていません。設定画面で指定してください。");
+
+            var psi = new ProcessStartInfo(current.TwitchChatToolPath)
+            {
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                StandardErrorEncoding = Encoding.UTF8,
+            };
             foreach (var arg in args) psi.ArgumentList.Add(arg);
             return psi;
         }
@@ -386,4 +426,6 @@ namespace YtGui
     }
 
     internal sealed record PlaylistEntry(string Url, string Title);
+
+    public enum SiteKind { YouTube, Twitch, Unsupported }
 }
