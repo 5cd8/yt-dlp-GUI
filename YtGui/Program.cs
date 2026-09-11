@@ -64,6 +64,7 @@ namespace YtGui
         readonly Button btnTopMost = new() { Text = "常に最前面: OFF", AutoSize = true };
         readonly HashSet<Control> selectionActionButtons = new();
         readonly System.Windows.Forms.Timer progressUiTimer = new() { Interval = 1000 };
+        int chatReplayMarqueeTick;
 
         readonly Queue<QueueItem> queue = new();
         readonly List<QueueItem> allItems = new();
@@ -161,8 +162,12 @@ namespace YtGui
             progressUiTimer.Tick += (_, _) =>
             {
                 bool any;
-                lock (queueLock) any = allItems.Exists(x => x.Status == "ダウンロード中");
-                if (any) lvQueue.Invalidate();
+                lock (queueLock) any = allItems.Exists(x => x.Status is "ダウンロード中" or "チャット取得中");
+                if (any)
+                {
+                    chatReplayMarqueeTick++;
+                    lvQueue.Invalidate();
+                }
             };
             progressUiTimer.Start();
 
@@ -543,7 +548,33 @@ namespace YtGui
             using var backgroundBrush = new SolidBrush(background);
             e.Graphics.FillRectangle(backgroundBrush, e.Bounds);
 
-            if (e.ColumnIndex != 1 || listItem.Tag is not QueueItem item || item.ProgressPercent < 0)
+            if (e.ColumnIndex != 1 || listItem.Tag is not QueueItem item)
+            {
+                TextRenderer.DrawText(e.Graphics, subItem.Text, lvQueue.Font, e.Bounds, foreground,
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+                return;
+            }
+
+            if (item.Status == "チャット取得中")
+            {
+                var marqueeBar = Rectangle.Inflate(e.Bounds, -4, -4);
+                using var marqueeTrackBrush = new SolidBrush(selected ? Color.FromArgb(90, Color.White) : Color.Gainsboro);
+                e.Graphics.FillRectangle(marqueeTrackBrush, marqueeBar);
+                // 実進捗が取得できないため（チャットツールの出力形式が未確認）、往復するブロックで
+                // 「動いている」ことだけを示す不定進捗（indeterminate）表示にする。
+                var blockWidth = Math.Max(20, marqueeBar.Width / 5);
+                var travel = Math.Max(1, marqueeBar.Width - blockWidth);
+                var pos = chatReplayMarqueeTick % (travel * 2);
+                if (pos > travel) pos = travel * 2 - pos;
+                using var marqueeBrush = new SolidBrush(selected ? Color.FromArgb(190, Color.White) : Color.FromArgb(45, 135, 70));
+                e.Graphics.FillRectangle(marqueeBrush, new Rectangle(marqueeBar.X + pos, marqueeBar.Y, blockWidth, marqueeBar.Height));
+                e.Graphics.DrawRectangle(SystemPens.ControlDark, marqueeBar);
+                TextRenderer.DrawText(e.Graphics, subItem.Text, lvQueue.Font, marqueeBar, foreground,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+                return;
+            }
+
+            if (item.ProgressPercent < 0)
             {
                 TextRenderer.DrawText(e.Graphics, subItem.Text, lvQueue.Font, e.Bounds, foreground,
                     TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
