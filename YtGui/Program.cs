@@ -858,6 +858,7 @@ namespace YtGui
             if (settings.UseNoPart) args.Add("--no-part");
             if (item.DownloadChatReplay && YtDlp.DetermineSiteKind(item.Url) == SiteKind.YouTube)
             {
+                // yt-dlpが--write-live-chatを廃止し、ライブチャットを疑似言語"live_chat"の字幕として扱う方式に統一したため（docs/adr/0003参照）
                 args.Add("--write-subs");
                 args.Add("--sub-langs");
                 args.Add("live_chat");
