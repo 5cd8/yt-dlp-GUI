@@ -857,7 +857,11 @@ namespace YtGui
             args.Add("--add-metadata");
             if (settings.UseNoPart) args.Add("--no-part");
             if (item.DownloadChatReplay && YtDlp.DetermineSiteKind(item.Url) == SiteKind.YouTube)
-                args.Add("--write-live-chat");
+            {
+                args.Add("--write-subs");
+                args.Add("--sub-langs");
+                args.Add("live_chat");
+            }
 
             if (!string.IsNullOrWhiteSpace(item.OutputFilePath))
             {
@@ -954,7 +958,7 @@ namespace YtGui
             var siteKind = YtDlp.DetermineSiteKind(item.Url);
             if (siteKind == SiteKind.YouTube)
             {
-                // RunYtDlpAsync内の --write-live-chat で完結済み。絵文字キャッシュ投入のみ必要なら行う。
+                // RunYtDlpAsync内の --write-subs --sub-langs live_chat で完結済み。絵文字キャッシュ投入のみ必要なら行う。
                 if (youTubeChatPath != null)
                     await ProcessEmojiCacheIfRequestedAsync(item, youTubeChatPath, siteKind, token);
                 return;
