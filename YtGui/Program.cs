@@ -162,7 +162,7 @@ namespace YtGui
             progressUiTimer.Tick += (_, _) =>
             {
                 bool any;
-                lock (queueLock) any = allItems.Exists(x => x.Status is "ダウンロード中" or "チャット取得中");
+                lock (queueLock) any = allItems.Exists(x => x.Status is "ダウンロード中" or "チャット取得中" or "絵文字キャッシュ投入中");
                 if (any)
                 {
                     chatReplayMarqueeTick++;
@@ -555,7 +555,7 @@ namespace YtGui
                 return;
             }
 
-            if (item.Status == "チャット取得中")
+            if (item.Status is "チャット取得中" or "絵文字キャッシュ投入中")
             {
                 var marqueeBar = Rectangle.Inflate(e.Bounds, -4, -4);
                 using var marqueeTrackBrush = new SolidBrush(selected ? Color.FromArgb(90, Color.White) : Color.Gainsboro);
@@ -771,6 +771,9 @@ namespace YtGui
                     var rc = await RunYtDlpAsync(item, token);
                     if (rc != 0) throw new InvalidOperationException($"yt-dlp が終了コード {rc} を返しました。");
                     UpdateStatus($"完了: {item.Url} (exit {rc})");
+                    string? youTubeChatPath = null;
+                    if (item.DownloadChatReplay && YtDlp.DetermineSiteKind(item.Url) == SiteKind.YouTube)
+                        youTubeChatPath = YtDlp.BuildYouTubeLiveChatPath(item.OutputFilePath);
                     await FinalizeLiveOutputFileAsync(item);
                     lock (queueLock)
                     {
@@ -778,7 +781,7 @@ namespace YtGui
                         item.ProgressPercent = 100;
                     }
                     RefreshQueueDisplay();
-                    await ProcessChatReplayIfRequestedAsync(item, token);
+                    await ProcessChatReplayIfRequestedAsync(item, youTubeChatPath, token);
                 }
                 catch (OperationCanceledException)
                 {
@@ -944,12 +947,18 @@ namespace YtGui
             return lastExit;
         }
 
-        async Task ProcessChatReplayIfRequestedAsync(QueueItem item, CancellationToken token)
+        async Task ProcessChatReplayIfRequestedAsync(QueueItem item, string? youTubeChatPath, CancellationToken token)
         {
             if (!item.DownloadChatReplay) return;
 
             var siteKind = YtDlp.DetermineSiteKind(item.Url);
-            if (siteKind == SiteKind.YouTube) return; // RunYtDlpAsync内の --write-live-chat で完結済み
+            if (siteKind == SiteKind.YouTube)
+            {
+                // RunYtDlpAsync内の --write-live-chat で完結済み。絵文字キャッシュ投入のみ必要なら行う。
+                if (youTubeChatPath != null)
+                    await ProcessEmojiCacheIfRequestedAsync(item, youTubeChatPath, siteKind, token);
+                return;
+            }
 
             if (siteKind != SiteKind.Twitch)
             {
@@ -963,11 +972,13 @@ namespace YtGui
                 item.Status = "チャット取得中";
             }
             RefreshQueueDisplay();
+            var chatPath = YtDlp.BuildChatReplayOutputPath(item.OutputFilePath); // 1回だけ計算、以後再計算しない
+            var chatSucceeded = false;
             try
             {
-                var chatPath = YtDlp.BuildChatReplayOutputPath(item.OutputFilePath);
                 var (exit, stderr) = await RunTwitchChatDownloadAsync(item, chatPath, token);
-                UpdateStatus(exit == 0
+                chatSucceeded = exit == 0;
+                UpdateStatus(chatSucceeded
                     ? "チャットリプレイを取得しました: " + chatPath
                     : $"チャット取得に失敗しました (exit {exit}): {stderr.Trim()}");
             }
@@ -978,6 +989,58 @@ namespace YtGui
             catch (Exception ex)
             {
                 UpdateStatus("チャット取得でエラー: " + ex.Message);
+            }
+            finally
+            {
+                lock (queueLock)
+                {
+                    if (allItems.Contains(item)) item.Status = "ダウンロード完了";
+                }
+                RefreshQueueDisplay();
+            }
+
+            if (chatSucceeded)
+                await ProcessEmojiCacheIfRequestedAsync(item, chatPath, siteKind, token);
+        }
+
+        async Task ProcessEmojiCacheIfRequestedAsync(QueueItem item, string chatJsonPath, SiteKind siteKind, CancellationToken token)
+        {
+            if (string.IsNullOrWhiteSpace(settings.EmojiCacheOutputDirectory)) return;
+
+            var resolvedPath = chatJsonPath;
+            if (!File.Exists(resolvedPath) && siteKind == SiteKind.YouTube)
+            {
+                var fallback = YtDlp.FindYouTubeLiveChatFileFallback(chatJsonPath);
+                if (fallback != null)
+                {
+                    UpdateStatus("想定と異なる名前のチャットJSONを使用します: " + fallback);
+                    resolvedPath = fallback;
+                }
+            }
+            if (!File.Exists(resolvedPath))
+            {
+                UpdateStatus("絵文字キャッシュ投入をスキップしました（チャットJSONが見つかりません）: " + resolvedPath);
+                return;
+            }
+
+            lock (queueLock)
+            {
+                if (!allItems.Contains(item)) return;
+                item.Status = "絵文字キャッシュ投入中";
+            }
+            RefreshQueueDisplay();
+            try
+            {
+                var (downloaded, failed) = await EmojiCache.PopulateAsync(resolvedPath, siteKind, settings.EmojiCacheOutputDirectory, UpdateStatus, token);
+                UpdateStatus($"絵文字キャッシュ投入が完了しました（取得: {downloaded}件, 失敗: {failed}件）");
+            }
+            catch (OperationCanceledException)
+            {
+                UpdateStatus("絵文字キャッシュ投入を中止しました。");
+            }
+            catch (Exception ex)
+            {
+                UpdateStatus("絵文字キャッシュ投入でエラー: " + ex.Message);
             }
             finally
             {

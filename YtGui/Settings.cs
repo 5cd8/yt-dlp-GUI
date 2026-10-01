@@ -11,6 +11,7 @@ namespace YtGui
         public string TwitchChatToolPath { get; set; } = string.Empty;
         public string DefaultCookiePath { get; set; } = string.Empty;
         public string OutputDirectory { get; set; } = string.Empty;
+        public string EmojiCacheOutputDirectory { get; set; } = string.Empty;
         public bool UseNoPart { get; set; } = true;
         public int RetryCount { get; set; } = 3;
         public int RetryDelaySeconds { get; set; } = 5;
