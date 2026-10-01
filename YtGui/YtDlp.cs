@@ -158,12 +158,45 @@ namespace YtGui
             }
         }
 
-        public static string BuildChatReplayOutputPath(string videoOutputPath)
+        static (string Dir, string BaseName) SplitVideoPath(string videoOutputPath)
         {
             var dir = Path.GetDirectoryName(videoOutputPath);
             if (string.IsNullOrWhiteSpace(dir)) dir = Directory.GetCurrentDirectory();
             var baseName = Path.GetFileNameWithoutExtension(videoOutputPath);
+            return (dir, baseName);
+        }
+
+        public static string BuildChatReplayOutputPath(string videoOutputPath)
+        {
+            var (dir, baseName) = SplitVideoPath(videoOutputPath);
             return MakeUniquePath(Path.Combine(dir, baseName + ".chat_replay.json"));
+        }
+
+        public static string BuildYouTubeLiveChatPath(string videoOutputPath)
+        {
+            var (dir, baseName) = SplitVideoPath(videoOutputPath);
+            return Path.Combine(dir, baseName + ".live_chat.json");
+        }
+
+        public static string? FindYouTubeLiveChatFileFallback(string expectedPath)
+        {
+            try
+            {
+                var dir = Path.GetDirectoryName(expectedPath);
+                if (string.IsNullOrWhiteSpace(dir) || !Directory.Exists(dir)) return null;
+                var fileName = Path.GetFileName(expectedPath);
+                const string suffix = ".live_chat.json";
+                var baseName = fileName.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)
+                    ? fileName[..^suffix.Length]
+                    : Path.GetFileNameWithoutExtension(fileName);
+                var candidates = Directory.GetFiles(dir, baseName + "*.live_chat.json");
+                if (candidates.Length == 0) return null;
+                return candidates.OrderByDescending(File.GetLastWriteTimeUtc).First();
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         public static string SanitizeFileName(string name)
