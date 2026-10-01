@@ -5,6 +5,7 @@
 	<UseWindowsForms>true</UseWindowsForms>
 	<Nullable>enable</Nullable>
 	<ImplicitUsings>enable</ImplicitUsings>
+	<SatelliteResourceLanguages>ja</SatelliteResourceLanguages>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.12" />
