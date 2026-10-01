@@ -174,6 +174,9 @@ namespace YtGui
 
         public static string BuildYouTubeLiveChatPath(string videoOutputPath)
         {
+            // --skip-downloadでの検証では拡張子がそのまま末尾に残ったが、実際のフルダウンロード
+            // （マージ処理を伴う）ではリテラルな-o指定でも拡張子は正しく除去される。
+            // 実際の出力ディレクトリの実例（<title>.webm / <title>.mkv と<title>.live_chat.json）で確認済み。
             var (dir, baseName) = SplitVideoPath(videoOutputPath);
             return Path.Combine(dir, baseName + ".live_chat.json");
         }

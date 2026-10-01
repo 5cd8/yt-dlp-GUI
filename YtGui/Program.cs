@@ -574,7 +574,7 @@ namespace YtGui
                 return;
             }
 
-            if (item.ProgressPercent < 0)
+            if (item.ProgressPercent < 0 || item.Status == "ダウンロード完了")
             {
                 TextRenderer.DrawText(e.Graphics, subItem.Text, lvQueue.Font, e.Bounds, foreground,
                     TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
@@ -609,10 +609,31 @@ namespace YtGui
         {
             if (!TryGetDownloadProgress(line, out var percent))
             {
+                // ライブチャットのフラグメント取得行（[youtube_live_chat] ...）には%表示がなく進捗が計算できないため、
+                // 既存の「チャット取得中」マーキー表示に切り替えてフリーズして見えるのを防ぐ。
+                if (line.Contains("[youtube_live_chat]"))
+                {
+                    bool changed;
+                    lock (queueLock)
+                    {
+                        changed = allItems.Contains(item) && item.Status != "チャット取得中";
+                        if (changed) item.Status = "チャット取得中";
+                    }
+                    if (changed) RefreshQueueDisplay();
+                }
                 UpdateStatus(line);
                 return;
             }
-            lock (queueLock) item.ProgressPercent = Math.Clamp(percent, 0, 100);
+            // チャット取得フェーズの後に動画/音声のダウンロードが再開するケース（%表示が戻ってくる）では
+            // マーキー表示に固定されたままにならないよう、通常の進捗表示に戻す。
+            bool reverted;
+            lock (queueLock)
+            {
+                item.ProgressPercent = Math.Clamp(percent, 0, 100);
+                reverted = allItems.Contains(item) && item.Status == "チャット取得中";
+                if (reverted) item.Status = "ダウンロード中";
+            }
+            if (reverted) RefreshQueueDisplay();
         }
         async Task CheckYtDlpUpdateAsync()
         {
@@ -959,9 +980,14 @@ namespace YtGui
             var siteKind = YtDlp.DetermineSiteKind(item.Url);
             if (siteKind == SiteKind.YouTube)
             {
-                // RunYtDlpAsync内の --write-subs --sub-langs live_chat で完結済み。絵文字キャッシュ投入のみ必要なら行う。
+                // RunYtDlpAsync内の --write-subs --sub-langs live_chat で完結済み。
+                // 絵文字キャッシュ設定の有無に関わらず、まずファイル名を想定の名前に揃える。
                 if (youTubeChatPath != null)
-                    await ProcessEmojiCacheIfRequestedAsync(item, youTubeChatPath, siteKind, token);
+                {
+                    var alignedPath = AlignYouTubeLiveChatFileName(youTubeChatPath);
+                    if (alignedPath != null)
+                        await ProcessEmojiCacheIfRequestedAsync(item, alignedPath, siteKind, token);
+                }
                 return;
             }
 
@@ -1008,20 +1034,37 @@ namespace YtGui
                 await ProcessEmojiCacheIfRequestedAsync(item, chatPath, siteKind, token);
         }
 
+        // yt-dlpが実際に書き出したlive_chat.jsonを探し、想定ファイル名（BuildYouTubeLiveChatPath）に
+        // リネームして揃える。見つからない場合はnullを返す。
+        string? AlignYouTubeLiveChatFileName(string expectedPath)
+        {
+            if (File.Exists(expectedPath)) return expectedPath;
+
+            var fallback = YtDlp.FindYouTubeLiveChatFileFallback(expectedPath);
+            if (fallback == null)
+            {
+                UpdateStatus("チャットリプレイJSONが見つかりませんでした: " + expectedPath);
+                return null;
+            }
+
+            try
+            {
+                File.Move(fallback, expectedPath);
+                UpdateStatus("チャットリプレイJSONのファイル名を揃えました: " + Path.GetFileName(expectedPath));
+                return expectedPath;
+            }
+            catch (Exception ex)
+            {
+                UpdateStatus("チャットJSONのリネームに失敗したため、元のファイル名のまま使用します: " + fallback + " (" + ex.Message + ")");
+                return fallback;
+            }
+        }
+
         async Task ProcessEmojiCacheIfRequestedAsync(QueueItem item, string chatJsonPath, SiteKind siteKind, CancellationToken token)
         {
             if (string.IsNullOrWhiteSpace(settings.EmojiCacheOutputDirectory)) return;
 
             var resolvedPath = chatJsonPath;
-            if (!File.Exists(resolvedPath) && siteKind == SiteKind.YouTube)
-            {
-                var fallback = YtDlp.FindYouTubeLiveChatFileFallback(chatJsonPath);
-                if (fallback != null)
-                {
-                    UpdateStatus("想定と異なる名前のチャットJSONを使用します: " + fallback);
-                    resolvedPath = fallback;
-                }
-            }
             if (!File.Exists(resolvedPath))
             {
                 UpdateStatus("絵文字キャッシュ投入をスキップしました（チャットJSONが見つかりません）: " + resolvedPath);
@@ -1054,6 +1097,7 @@ namespace YtGui
                     if (allItems.Contains(item)) item.Status = "ダウンロード完了";
                 }
                 RefreshQueueDisplay();
+                UpdateStatus($"完了: {item.Title}");
             }
         }
 
