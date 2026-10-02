@@ -76,7 +76,8 @@ namespace YtGui
         bool logFlushScheduled;
         readonly ExecutionLogWriter executionLogWriter;
         CancellationTokenSource? cts;
-        bool running;
+        QueueProcessingState queueProcessingState = QueueProcessingState.Idle;
+        bool isStartReserved;
         Settings settings = Settings.Load();
 
         public MainForm()
@@ -379,13 +380,13 @@ namespace YtGui
             }
             if (enqueuedCount == 0) return;
             UpdateStatus($"チャットリプレイの取得をキューに入れました（{enqueuedCount}件）。");
-            if (!running) StartProcessing();
+            StartOrReserveProcessing();
         }
 
         void BtnStart_Click(object? sender, EventArgs e)
         {
-            if (!running) StartProcessing();
-            else StopProcessing();
+            if (queueProcessingState == QueueProcessingState.Idle) StartProcessing();
+            else if (queueProcessingState == QueueProcessingState.Running) StopProcessing();
         }
 
         void StartProcessing()
@@ -398,10 +399,35 @@ namespace YtGui
                     return;
                 }
             }
-            running = true;
+            StartQueueProcessingLoop();
+        }
+
+        void StartQueueProcessingLoop()
+        {
+            queueProcessingState = QueueProcessingState.Running;
             btnStart.Text = "停止";
+            btnStart.Enabled = true;
             cts = new CancellationTokenSource();
-            _ = Task.Run(() => ProcessQueueAsync(cts.Token));
+            var token = cts.Token;
+            _ = Task.Run(async () =>
+            {
+                var hasFaulted = false;
+                try
+                {
+                    await ProcessQueueAsync(token);
+                }
+                catch (Exception ex)
+                {
+                    hasFaulted = true;
+                    UpdateStatus("キュー処理がエラーで止まりました: " + ex.Message);
+                }
+                finally
+                {
+                    // 例外で抜けても受け取らないと、停止中のままボタンが押せなくなる。
+                    try { BeginInvoke(() => OnQueueProcessingFinished(hasFaulted)); }
+                    catch (InvalidOperationException) { }
+                }
+            });
         }
 
         void StopProcessing()
@@ -415,9 +441,41 @@ namespace YtGui
                     try { KillProcessTree(item.ActiveProcPid); } catch { }
                 }
             }
-            running = false;
-            btnStart.Text = "開始";
+            queueProcessingState = QueueProcessingState.Stopping;
+            btnStart.Text = "停止中…";
+            btnStart.Enabled = false;
             UpdateStatus("停止しました。");
+        }
+
+        void OnQueueProcessingFinished(bool hasFaulted)
+        {
+            // 判定に isStartReserved を直接渡さない。捨てる行より後で読むと、予約が常に false になる。
+            var wasStartReserved = isStartReserved;
+            isStartReserved = false;
+            bool hasQueuedItems;
+            lock (queueLock) hasQueuedItems = queue.Count > 0;
+            if (QueueProcessingLifecycle.ShouldStartNextAfterFinished(queueProcessingState, wasStartReserved, hasQueuedItems, hasFaulted))
+            {
+                StartQueueProcessingLoop();
+                return;
+            }
+            queueProcessingState = QueueProcessingState.Idle;
+            btnStart.Text = "開始";
+            btnStart.Enabled = true;
+        }
+
+        void StartOrReserveProcessing()
+        {
+            switch (QueueProcessingLifecycle.DecideAutoStart(queueProcessingState, isStartReserved))
+            {
+                case AutoStartDecision.Start:
+                    StartProcessing();
+                    break;
+                case AutoStartDecision.Reserve:
+                    isStartReserved = true;
+                    UpdateStatus("停止の処理が終わったら、キュー処理を開始します。");
+                    break;
+            }
         }
 
         string CookieFromUi() => tbCookie.Text.Trim();
@@ -545,7 +603,7 @@ namespace YtGui
             EnqueueItem(item);
             tbUrl.Clear();
             UpdateStatus("キューに追加しました: " + item.Title);
-            if (isLive && !running) StartProcessing();
+            if (isLive) StartOrReserveProcessing();
         }
 
         void RefreshQueueDisplay()
@@ -840,11 +898,6 @@ namespace YtGui
                     RefreshQueueDisplay();
                 }
             }
-            BeginInvoke(() =>
-            {
-                running = false;
-                btnStart.Text = "開始";
-            });
         }
 
         async Task<int> RunYtDlpAsync(QueueItem item, CancellationToken token)
