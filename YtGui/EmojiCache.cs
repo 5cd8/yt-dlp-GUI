@@ -145,7 +145,10 @@ namespace YtGui
                     var data = await response.Content.ReadAsByteArrayAsync(token).ConfigureAwait(false);
                     return LooksLikeImage(data) ? data : null;
                 }
-                catch (OperationCanceledException) { throw; }
+                // HttpClient のタイムアウトも OperationCanceledException で届く（.NET 5以降は TimeoutException を内包。
+                // https://learn.microsoft.com/dotnet/api/system.net.http.httpclient.getasync の GetAsync(String, CancellationToken)）。
+                // 無条件に再スローすると、1件のタイムアウトで WhenAll ごと失敗し、取得済みの分も書き込まれない。
+                catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
                 catch { return null; }
             }
 
