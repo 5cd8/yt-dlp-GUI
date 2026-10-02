@@ -36,6 +36,7 @@ dotnet publish YtGui/YtGui.csproj -c Release -o publish/<フォルダ名>
   - 1回の実行の中でも、stdoutの行の形式が変わる（`%` 付き ↔ `%` 無し）。表示モードに入る条件と出る条件は、対で実装する。
   - 終端のステータス（完了・キャンセル・失敗）は、文字列で表示する。
 - **`await` の後にキュー項目を書き換えるときは、事前に `allItems.Contains(item)` を確かめる。**
+- **項目の中止（「選択を中止」「削除」）が止めるのは、`item.ActiveCts` のトークンと `item.ActiveProcPid` のプロセスだけ。** キュー全体の `token` を渡しているだけの処理は止まらない。動画取得の後に止められる処理を足すときは、`CreateLinkedTokenSource` で作ったトークンを `item.ActiveCts` に入れ、そのトークンを処理に渡す。
 - **`emoji_cache.sqlite` はvlc-chatと共有する契約。** 次のものを変えるときは、両方のリポジトリを揃える。
   - テーブル：`emoji_cache(url TEXT PRIMARY KEY, data BLOB NOT NULL)`
   - TwitchのエモートURLの形：`https://static-cdn.jtvnw.net/emoticons/v2/{id}/default/dark/2.0`

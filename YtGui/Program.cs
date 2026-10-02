@@ -1071,6 +1071,7 @@ namespace YtGui
                 return;
             }
 
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(token);
             lock (queueLock)
             {
                 if (!allItems.Contains(item)) return;
@@ -1079,7 +1080,9 @@ namespace YtGui
             RefreshQueueDisplay();
             try
             {
-                var (downloaded, failed) = await EmojiCache.PopulateAsync(resolvedPath, siteKind, settings.EmojiCacheOutputDirectory, UpdateStatus, token);
+                // 項目の中止（CancelItems）が止めるのは item.ActiveCts と ActiveProcPid だけ。プロセスを持たないこの処理は、キュー全体の token をそのまま渡しても止まらない。
+                item.ActiveCts = linkedCts;
+                var (downloaded, failed) = await EmojiCache.PopulateAsync(resolvedPath, siteKind, settings.EmojiCacheOutputDirectory, UpdateStatus, linkedCts.Token);
                 UpdateStatus($"絵文字キャッシュ投入が完了しました（取得: {downloaded}件, 失敗: {failed}件）");
             }
             catch (OperationCanceledException)
@@ -1092,6 +1095,7 @@ namespace YtGui
             }
             finally
             {
+                item.ActiveCts = null;
                 lock (queueLock)
                 {
                     if (allItems.Contains(item)) item.Status = "ダウンロード完了";
