@@ -23,6 +23,7 @@ dotnet publish YtGui/YtGui.csproj -c Release -o publish/<フォルダ名>
 | `YtGui/Program.cs` | `MainForm` と `QueueItem`。キュー処理（`ProcessQueueAsync` → `RunYtDlpAsync` → `ProcessChatReplayIfRequestedAsync` → `ProcessEmojiCacheIfRequestedAsync`）、stdoutからの進捗の解析、`ListView` のオーナードロー |
 | `YtGui/YtDlp.cs` | yt-dlpの呼び出し、URLの正規化、サイト種別の判定、出力パスの組み立て |
 | `YtGui/EmojiCache.cs` | チャットJSONから絵文字・エモートのURLを抽出してダウンロードし、`emoji_cache.sqlite` に投入する |
+| `YtGui/ThumbnailEmbedder.cs` | ライブ録画の仕上げで、ffmpeg を使って動画にサムネイルを埋め込む。トークンで止められる |
 | `YtGui/FormatSelectionForm.cs`・`MediaFormat.cs` | フォーマット一覧の解析と選択画面 |
 | `YtGui/Settings.cs`・`SettingsForm.cs` | 設定は `%APPDATA%\YtGui\settings.json`。yt-dlp・ffmpeg・Twitchチャットツールのパス、出力先、絵文字キャッシュの出力先など |
 

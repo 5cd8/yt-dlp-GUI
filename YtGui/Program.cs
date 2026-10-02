@@ -162,7 +162,7 @@ namespace YtGui
             progressUiTimer.Tick += (_, _) =>
             {
                 bool any;
-                lock (queueLock) any = allItems.Exists(x => x.Status is "ダウンロード中" or "チャット取得中" or "絵文字キャッシュ投入中");
+                lock (queueLock) any = allItems.Exists(x => x.Status is "ダウンロード中" or "チャット取得中" or "絵文字キャッシュ投入中" or "仕上げ中");
                 if (any)
                 {
                     chatReplayMarqueeTick++;
@@ -555,7 +555,7 @@ namespace YtGui
                 return;
             }
 
-            if (item.Status is "チャット取得中" or "絵文字キャッシュ投入中")
+            if (item.Status is "チャット取得中" or "絵文字キャッシュ投入中" or "仕上げ中")
             {
                 var marqueeBar = Rectangle.Inflate(e.Bounds, -4, -4);
                 using var marqueeTrackBrush = new SolidBrush(selected ? Color.FromArgb(90, Color.White) : Color.Gainsboro);
@@ -692,9 +692,10 @@ namespace YtGui
             try { Process.GetProcessById(pid).Kill(entireProcessTree: true); } catch { }
         }
 
-        async Task FinalizeLiveOutputFileAsync(QueueItem item)
+        async Task FinalizeLiveOutputFileAsync(QueueItem item, CancellationToken token)
         {
             if (!item.IsLive) return;
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(token);
             try
             {
                 var path = item.OutputFilePath;
@@ -702,71 +703,25 @@ namespace YtGui
                 if (!path.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase)) return;
                 var partPath = path + ".part";
                 if (!File.Exists(partPath)) return;
+                // 項目の中止（CancelItems）が止めるのは item.ActiveCts と ActiveProcPid だけ。ここで入れないと、仕上げ中の ffmpeg は止まらない。
+                item.ActiveCts = linkedCts;
+                lock (queueLock)
+                {
+                    if (allItems.Contains(item)) item.Status = "仕上げ中";
+                }
+                RefreshQueueDisplay();
                 var finalPath = YtDlp.MakeUniquePath(path);
                 File.Move(partPath, finalPath);
                 item.OutputFilePath = finalPath;
-                await EmbedThumbnailAsync(finalPath);
+                var ffmpegPath = string.IsNullOrWhiteSpace(settings.FfmpegPath) ? "ffmpeg" : settings.FfmpegPath;
+                var outcome = await ThumbnailEmbedder.EmbedAsync(ffmpegPath, finalPath, linkedCts.Token);
+                if (outcome == ThumbnailEmbedOutcome.Canceled) UpdateStatus("サムネイルの埋め込みを中止しました。");
             }
             catch { }
-        }
-
-        async Task EmbedThumbnailAsync(string videoPath)
-        {
-            var dir = Path.GetDirectoryName(videoPath);
-            var baseName = Path.GetFileNameWithoutExtension(videoPath);
-            if (string.IsNullOrWhiteSpace(dir)) return;
-            string[] thumbExts = { ".webp", ".jpg", ".jpeg", ".png" };
-            var thumbPath = thumbExts
-                .Select(ext => Path.Combine(dir, baseName + ext))
-                .FirstOrDefault(File.Exists);
-            if (thumbPath == null) return;
-
-            var tempPath = Path.Combine(dir, baseName + ".thumbtmp.mp4");
-            var embedded = false;
-            try
+            finally
             {
-                var ffmpeg = string.IsNullOrWhiteSpace(settings.FfmpegPath) ? "ffmpeg" : settings.FfmpegPath;
-                var psi = new ProcessStartInfo(ffmpeg)
-                {
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                };
-                psi.ArgumentList.Add("-y");
-                psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(videoPath);
-                psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(thumbPath);
-                psi.ArgumentList.Add("-map"); psi.ArgumentList.Add("0");
-                psi.ArgumentList.Add("-map"); psi.ArgumentList.Add("1");
-                psi.ArgumentList.Add("-c"); psi.ArgumentList.Add("copy");
-                psi.ArgumentList.Add("-c:v:1"); psi.ArgumentList.Add("mjpeg");
-                psi.ArgumentList.Add("-disposition:v:1"); psi.ArgumentList.Add("attached_pic");
-                psi.ArgumentList.Add(tempPath);
-
-                using var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
-                proc.OutputDataReceived += (_, _) => { };
-                proc.ErrorDataReceived += (_, _) => { };
-                proc.Start();
-                proc.BeginOutputReadLine();
-                proc.BeginErrorReadLine();
-                await proc.WaitForExitAsync();
-                embedded = proc.ExitCode == 0 && File.Exists(tempPath);
+                item.ActiveCts = null;
             }
-            catch { }
-
-            try
-            {
-                if (embedded)
-                {
-                    File.Replace(tempPath, videoPath, null);
-                }
-                else
-                {
-                    try { File.Delete(tempPath); } catch { }
-                }
-            }
-            catch { }
-            try { File.Delete(thumbPath); } catch { }
         }
 
         async Task ProcessQueueAsync(CancellationToken token)
@@ -795,7 +750,7 @@ namespace YtGui
                     string? youTubeChatPath = null;
                     if (item.DownloadChatReplay && YtDlp.DetermineSiteKind(item.Url) == SiteKind.YouTube)
                         youTubeChatPath = YtDlp.BuildYouTubeLiveChatPath(item.OutputFilePath);
-                    await FinalizeLiveOutputFileAsync(item);
+                    await FinalizeLiveOutputFileAsync(item, token);
                     lock (queueLock)
                     {
                         item.Status = "ダウンロード完了";
@@ -808,7 +763,8 @@ namespace YtGui
                 {
                     if (token.IsCancellationRequested)
                     {
-                        await FinalizeLiveOutputFileAsync(item);
+                        // 停止で中止済みの token と連動させると、仕上げが始まった瞬間に止まってしまう。
+                        await FinalizeLiveOutputFileAsync(item, CancellationToken.None);
                         lock (queueLock)
                         {
                             item.Status = "キャンセル";
@@ -818,7 +774,7 @@ namespace YtGui
                         UpdateStatus("キャンセルされました。");
                         break;
                     }
-                    await FinalizeLiveOutputFileAsync(item);
+                    await FinalizeLiveOutputFileAsync(item, token);
                     lock (queueLock)
                     {
                         if (allItems.Contains(item))
