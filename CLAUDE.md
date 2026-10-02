@@ -20,12 +20,13 @@ dotnet publish YtGui/YtGui.csproj -c Release -o publish/<フォルダ名>
 
 | ファイル | 責務 |
 |---|---|
-| `YtGui/Program.cs` | `MainForm` と `QueueItem`。キュー処理（`ProcessQueueAsync` → `RunYtDlpAsync` → `FinalizeLiveOutputFileAsync` → `ProcessChatReplayIfRequestedAsync`（ライブは `FetchYouTubeLiveChatReplayAsync`）→ `ProcessEmojiCacheIfRequestedAsync`）、stdoutからの進捗の解析、`ListView` のオーナードロー |
+| `YtGui/Program.cs` | `MainForm` と `QueueItem`。キュー処理（`ProcessQueueAsync` → `RunYtDlpAsync` → `FinalizeLiveOutputFileAsync` → `ProcessChatReplayIfRequestedAsync`（ライブは `FetchYouTubeLiveChatReplayAsync`）→ `ProcessEmojiCacheIfRequestedAsync`）、キュー処理の開始・停止・終わりの受け取り（`StartProcessing`・`StopProcessing`・`OnQueueProcessingFinished`）、stdoutからの進捗の解析、`ListView` のオーナードロー |
 | `YtGui/YtDlp.cs` | yt-dlpの呼び出し、URLの正規化、サイト種別の判定、出力パスの組み立て |
 | `YtGui/EmojiCache.cs` | チャットJSONから絵文字・エモートのURLを抽出してダウンロードし、`emoji_cache.sqlite` に投入する |
 | `YtGui/ThumbnailEmbedder.cs` | ライブ録画の仕上げで、ffmpeg を使って動画にサムネイルを埋め込む。トークンで止められる |
 | `YtGui/ExecutionLog.cs` | 実行ログ（画面下部のログ欄）への追記と、古い行の切り詰め。yt-dlp の出力のうち、ffmpeg の雑音の行の判定。ログ欄のテキストは `ExecutionLogWriter` だけが書き換える |
 | `YtGui/LiveChatReplay.cs` | ライブ録画のチャットリプレイを録画の後に取るときの、UIに依存しない判定と組み立て（対象かどうか、「チャット未取得」の表示、右クリックでキューに入れてよいか、yt-dlp の引数） |
+| `YtGui/QueueProcessingLifecycle.cs` | キュー処理の状態（動いていない・動いている・停止中）と、自動開始を予約するか、キュー処理の終わりに次を始めるかの、UIに依存しない判定 |
 | `YtGui/FormatSelectionForm.cs`・`MediaFormat.cs` | フォーマット一覧の解析と選択画面 |
 | `YtGui/Settings.cs`・`SettingsForm.cs` | 設定は `%APPDATA%\YtGui\settings.json`。yt-dlp・ffmpeg・Twitchチャットツールのパス、出力先、絵文字キャッシュの出力先など |
 
@@ -33,6 +34,7 @@ dotnet publish YtGui/YtGui.csproj -c Release -o publish/<フォルダ名>
 
 - **ステータスを決めるのは、動画取得の成否だけ。** チャット取得や絵文字キャッシュの失敗は、ログへの警告にとどめる（ADR 0001）。
 - **Twitchは、動画取得（yt-dlp）が終わってからチャット取得（TwitchDownloaderCLI の `chatdownload`）を行う。** キュー処理は「1項目＝1プロセスを待つ」前提で作られている（ADR 0002）。
+- **キュー処理（`ProcessQueueAsync`）は同時に1つだけ動かす。** 始めるのは `StartQueueProcessingLoop` だけで、停止中（`QueueProcessingState.Stopping`）は始めない。キュー処理の終わりは `OnQueueProcessingFinished` が UIスレッドで受け取り、次を始めるか（停止中に予約された開始、終わる直前に入った項目）を決める。キュー処理を自動で始める操作は、`StartProcessing` ではなく `StartOrReserveProcessing` を呼ぶ。
 - **YouTubeのチャットは `--write-subs --sub-langs live_chat` で取る**（`--write-live-chat` はyt-dlpから削除された。ADR 0003）。yt-dlpの仕様は変わるので、この連携を変えたら、実際にフルダウンロードして確かめる（`--skip-download` だけで確かめない）。
 - **YouTubeのライブ録画では、録画と同じyt-dlpでチャットを取らない**（ADR 0005）。録画の後に、別のyt-dlp（`--skip-download`）でアーカイブのチャットリプレイを取る。取れたかどうかは、終了コードではなくファイルの有無で決める（チャットリプレイがまだ無いと、終了コード0でファイルを作らないため）。上の「`--skip-download` だけで確かめない」は、動画とチャットを1つの yt-dlp で取る経路の話。ライブ録画のチャットは `--skip-download` が本番の経路なので、`--skip-download` の実行で確かめてよい。
 - **後の処理が出力ファイル名を書き換えることがある**（ライブの後処理での衝突回避など）。そこから導くパスは、書き換えより前に確定させる。
