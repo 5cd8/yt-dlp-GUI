@@ -60,7 +60,8 @@ namespace YtGui
             }
             catch { }
             // 例外で外側の catch に落ちた場合も中止なら画像を残すため、try の外でトークンを見る。
-            var canceled = token.IsCancellationRequested;
+            // embedded の判定より後に届いた中止は、File.Replace で埋め込みが済むので中止として扱わない。
+            var canceled = !embedded && token.IsCancellationRequested;
 
             try
             {
