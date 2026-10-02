@@ -449,6 +449,7 @@ namespace YtGui
 
         void OnQueueProcessingFinished(bool hasFaulted)
         {
+            // 判定に isStartReserved を直接渡すと、捨てる行との順序次第で予約が効かなくなる。
             var wasStartReserved = isStartReserved;
             isStartReserved = false;
             bool hasQueuedItems;
