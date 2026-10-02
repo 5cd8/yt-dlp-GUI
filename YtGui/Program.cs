@@ -72,12 +72,14 @@ namespace YtGui
         readonly object logLock = new();
         readonly StringBuilder pendingLog = new();
         bool logFlushScheduled;
+        readonly ExecutionLogWriter executionLogWriter;
         CancellationTokenSource? cts;
         bool running;
         Settings settings = Settings.Load();
 
         public MainForm()
         {
+            executionLogWriter = new ExecutionLogWriter(tbLog);
             Text = "yt-dlp GUI";
             Width = 920;
             Height = 760;
@@ -621,7 +623,7 @@ namespace YtGui
                     }
                     if (changed) RefreshQueueDisplay();
                 }
-                UpdateStatus(line);
+                if (!ExecutionLogFilter.IsFfmpegNoiseLine(line)) UpdateStatus(line);
                 return;
             }
             // チャット取得フェーズの後に動画/音声のダウンロードが再開するケース（%表示が戻ってくる）では
@@ -675,15 +677,7 @@ namespace YtGui
                 pendingLog.Clear();
                 logFlushScheduled = false;
             }
-            tbLog.AppendText(batch);
-            const int maxLines = 2000;
-            var lines = tbLog.Lines;
-            if (lines.Length > maxLines)
-            {
-                var newLines = new string[maxLines];
-                Array.Copy(lines, lines.Length - maxLines, newLines, 0, maxLines);
-                tbLog.Lines = newLines;
-            }
+            executionLogWriter.Append(batch);
         }
 
         public static void KillProcessTree(int pid)
