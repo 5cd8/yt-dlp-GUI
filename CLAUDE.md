@@ -34,7 +34,7 @@ dotnet publish YtGui/YtGui.csproj -c Release -o publish/<フォルダ名>
 
 - **ステータスを決めるのは、動画取得の成否だけ。** チャット取得や絵文字キャッシュの失敗は、ログへの警告にとどめる（ADR 0001）。
 - **Twitchは、動画取得（yt-dlp）が終わってからチャット取得（TwitchDownloaderCLI の `chatdownload`）を行う。** キュー処理は「1項目＝1プロセスを待つ」前提で作られている（ADR 0002）。
-- **キュー処理（`ProcessQueueAsync`）は同時に1つだけ動かす。** 始めるのは `StartQueueProcessingLoop` だけで、停止中（`QueueProcessingState.Stopping`）は始めない。キュー処理の終わりは `OnQueueProcessingFinished` が UIスレッドで受け取り、次を始めるか（停止中に予約された開始、終わる直前に入った項目）を決める。キュー処理を自動で始める操作は、`StartProcessing` ではなく `StartOrReserveProcessing` を呼ぶ。
+- **キュー処理（`ProcessQueueAsync`）は同時に1つだけ動かす。** 始めるのは `StartQueueProcessingLoop` だけで、停止中（`QueueProcessingState.Stopping`）の間は始めない（停止中に予約された開始は、停止が完了した時点で `OnQueueProcessingFinished` が始める）。キュー処理の終わりは `OnQueueProcessingFinished` が UIスレッドで受け取り、次を始めるか（停止中に予約された開始、終わる直前に入った項目）を決める。キュー処理を自動で始める操作は、`StartProcessing` ではなく `StartOrReserveProcessing` を呼ぶ。
 - **YouTubeのチャットは `--write-subs --sub-langs live_chat` で取る**（`--write-live-chat` はyt-dlpから削除された。ADR 0003）。yt-dlpの仕様は変わるので、この連携を変えたら、実際にフルダウンロードして確かめる（`--skip-download` だけで確かめない）。
 - **YouTubeのライブ録画では、録画と同じyt-dlpでチャットを取らない**（ADR 0005）。録画の後に、別のyt-dlp（`--skip-download`）でアーカイブのチャットリプレイを取る。取れたかどうかは、終了コードではなくファイルの有無で決める（チャットリプレイがまだ無いと、終了コード0でファイルを作らないため）。上の「`--skip-download` だけで確かめない」は、動画とチャットを1つの yt-dlp で取る経路の話。ライブ録画のチャットは `--skip-download` が本番の経路なので、`--skip-download` の実行で確かめてよい。
 - **後の処理が出力ファイル名を書き換えることがある**（ライブの後処理での衝突回避など）。そこから導くパスは、書き換えより前に確定させる。
