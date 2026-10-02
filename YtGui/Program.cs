@@ -29,6 +29,8 @@ namespace YtGui
         public bool IsLive { get; set; }
         public bool LiveFromStart { get; set; }
         public bool DownloadChatReplay { get; set; }
+        public bool IsChatReplayMissing { get; set; }
+        public bool ShouldFetchChatReplayOnly { get; set; }
         public CancellationTokenSource? ActiveCts { get; set; }
         public int ActiveProcPid { get; set; }
     }
@@ -92,8 +94,8 @@ namespace YtGui
             chkLive.CheckedChanged += (_, _) => chkLiveFromStart.Enabled = chkLive.Checked;
             chkAudioOnly.CheckedChanged += (_, _) => cbCodec.Enabled = chkAudioOnly.Checked;
 
-            lvQueue.Columns.Add("Title", 520);
-            lvQueue.Columns.Add("Status", 180);
+            lvQueue.Columns.Add("Title", 440);
+            lvQueue.Columns.Add("Status", 260);
             lvQueue.DrawColumnHeader += (_, e) => e.DrawDefault = true;
             lvQueue.DrawItem += (_, e) => e.DrawDefault = false;
             lvQueue.DrawSubItem += LvQueue_DrawSubItem;
@@ -180,6 +182,14 @@ namespace YtGui
             var menu = new ContextMenuStrip();
             menu.Items.Add("選択を中止", null, (_, _) => BtnCancelItem_Click(this, EventArgs.Empty));
             menu.Items.Add("再キュー", null, (_, _) => RetryItems(GetSelectedItems()));
+            var fetchChatReplayMenuItem = menu.Items.Add("チャットリプレイを取得", null, (_, _) => FetchChatReplayForItems(GetSelectedItems()));
+            menu.Opening += (_, _) =>
+            {
+                var selected = GetSelectedItems();
+                bool canEnqueue;
+                lock (queueLock) canEnqueue = selected.Any(x => LiveChatReplay.CanEnqueueChatReplayFetch(x.Status, x.IsChatReplayMissing, x.ShouldFetchChatReplayOnly));
+                fetchChatReplayMenuItem.Enabled = canEnqueue;
+            };
             menu.Items.Add("保存先を開く", null, (_, _) => OpenSelectedOutput());
             lvQueue.ContextMenuStrip = menu;
             Shown += async (_, _) => await CheckYtDlpUpdateAsync();
@@ -342,6 +352,8 @@ namespace YtGui
                 {
                     if (item.Status is not ("失敗" or "キャンセル" or "未ダウンロード")) continue;
                     if (item.Status == "ダウンロード中") continue;
+                    if (item.ShouldFetchChatReplayOnly) continue;
+                    item.IsChatReplayMissing = false;
                     item.Status = "ダウンロード待ち";
                     item.ProgressPercent = -1;
                     queue.Enqueue(item);
@@ -349,6 +361,25 @@ namespace YtGui
             }
             RefreshQueueDisplay();
             UpdateStatus("再キューしました。");
+        }
+
+        void FetchChatReplayForItems(IReadOnlyList<QueueItem> items)
+        {
+            var enqueuedCount = 0;
+            lock (queueLock)
+            {
+                foreach (var item in items)
+                {
+                    if (!allItems.Contains(item)) continue;
+                    if (!LiveChatReplay.CanEnqueueChatReplayFetch(item.Status, item.IsChatReplayMissing, item.ShouldFetchChatReplayOnly)) continue;
+                    item.ShouldFetchChatReplayOnly = true;
+                    queue.Enqueue(item);
+                    enqueuedCount++;
+                }
+            }
+            if (enqueuedCount == 0) return;
+            UpdateStatus($"チャットリプレイの取得をキューに入れました（{enqueuedCount}件）。");
+            if (!running) StartProcessing();
         }
 
         void BtnStart_Click(object? sender, EventArgs e)
@@ -530,7 +561,7 @@ namespace YtGui
                 {
                     var title = string.IsNullOrWhiteSpace(it.Title) ? it.Url : it.Title;
                     var lvi = new ListViewItem(title);
-                    lvi.SubItems.Add(it.Status);
+                    lvi.SubItems.Add(LiveChatReplay.BuildStatusText(it.Status, it.IsChatReplayMissing));
                     lvi.Tag = it;
                     if (selected.Contains(it)) lvi.Selected = true;
                     lvQueue.Items.Add(lvi);
@@ -728,11 +759,22 @@ namespace YtGui
                     if (queue.Count > 0) item = queue.Dequeue();
                 }
                 if (item == null) break;
+                bool shouldFetchChatReplayOnly;
                 lock (queueLock)
                 {
                     if (!allItems.Contains(item)) continue;
-                    item.Status = "ダウンロード中";
-                    item.ProgressPercent = 0;
+                    shouldFetchChatReplayOnly = item.ShouldFetchChatReplayOnly;
+                    item.ShouldFetchChatReplayOnly = false;
+                    if (!shouldFetchChatReplayOnly)
+                    {
+                        item.Status = "ダウンロード中";
+                        item.ProgressPercent = 0;
+                    }
+                }
+                if (shouldFetchChatReplayOnly)
+                {
+                    await FetchYouTubeLiveChatReplayAsync(item, token);
+                    continue;
                 }
                 RefreshQueueDisplay();
                 UpdateStatus($"処理中: {item.Url}");
@@ -742,7 +784,7 @@ namespace YtGui
                     if (rc != 0) throw new InvalidOperationException($"yt-dlp が終了コード {rc} を返しました。");
                     UpdateStatus($"完了: {item.Url} (exit {rc})");
                     string? youTubeChatPath = null;
-                    if (item.DownloadChatReplay && YtDlp.DetermineSiteKind(item.Url) == SiteKind.YouTube)
+                    if (item.DownloadChatReplay && !item.IsLive && YtDlp.DetermineSiteKind(item.Url) == SiteKind.YouTube)
                         youTubeChatPath = YtDlp.BuildYouTubeLiveChatPath(item.OutputFilePath);
                     await FinalizeLiveOutputFileAsync(item, token);
                     lock (queueLock)
@@ -763,8 +805,10 @@ namespace YtGui
                         {
                             item.Status = "キャンセル";
                             item.ProgressPercent = -1;
+                            item.IsChatReplayMissing = LiveChatReplay.IsFetchedAfterRecording(item.IsLive, item.DownloadChatReplay, YtDlp.DetermineSiteKind(item.Url));
                         }
                         RefreshQueueDisplay();
+                        if (item.IsChatReplayMissing) UpdateStatus("チャットリプレイは、配信の終了後に右クリックの「チャットリプレイを取得」で取得できます: " + item.Title);
                         UpdateStatus("キャンセルされました。");
                         break;
                     }
@@ -775,10 +819,12 @@ namespace YtGui
                         {
                             item.Status = "キャンセル";
                             item.ProgressPercent = -1;
+                            item.IsChatReplayMissing = LiveChatReplay.IsFetchedAfterRecording(item.IsLive, item.DownloadChatReplay, YtDlp.DetermineSiteKind(item.Url));
                         }
                     }
                     RefreshQueueDisplay();
                     UpdateStatus("項目を中止しました: " + item.Title);
+                    if (item.IsChatReplayMissing) UpdateStatus("チャットリプレイは、配信の終了後に右クリックの「チャットリプレイを取得」で取得できます: " + item.Title);
                 }
                 catch (Exception ex)
                 {
@@ -827,9 +873,10 @@ namespace YtGui
             args.Add("--embed-thumbnail");
             args.Add("--add-metadata");
             if (settings.UseNoPart) args.Add("--no-part");
-            if (item.DownloadChatReplay && YtDlp.DetermineSiteKind(item.Url) == SiteKind.YouTube)
+            if (item.DownloadChatReplay && !item.IsLive && YtDlp.DetermineSiteKind(item.Url) == SiteKind.YouTube)
             {
                 // yt-dlpが--write-live-chatを廃止し、ライブチャットを疑似言語"live_chat"の字幕として扱う方式に統一したため（docs/adr/0003参照）
+                // ライブでは付けない。配信中のチャットは配信が終わるまで取り続けて録画が始まらず、vlc-chat も読めない形式のため、録画の後にアーカイブから取る（docs/adr/0005参照）
                 args.Add("--write-subs");
                 args.Add("--sub-langs");
                 args.Add("live_chat");
@@ -930,6 +977,11 @@ namespace YtGui
             var siteKind = YtDlp.DetermineSiteKind(item.Url);
             if (siteKind == SiteKind.YouTube)
             {
+                if (item.IsLive)
+                {
+                    await FetchYouTubeLiveChatReplayAsync(item, token);
+                    return;
+                }
                 // RunYtDlpAsync内の --write-subs --sub-langs live_chat で完結済み。
                 // 絵文字キャッシュ設定の有無に関わらず、まずファイル名を想定の名前に揃える。
                 if (youTubeChatPath != null)
@@ -984,6 +1036,91 @@ namespace YtGui
                 await ProcessEmojiCacheIfRequestedAsync(item, chatPath, siteKind, token);
         }
 
+        async Task FetchYouTubeLiveChatReplayAsync(QueueItem item, CancellationToken token)
+        {
+            var chatPath = YtDlp.BuildYouTubeLiveChatPath(item.OutputFilePath);
+            string previousStatus;
+            lock (queueLock)
+            {
+                if (!allItems.Contains(item)) return;
+                previousStatus = item.Status;
+                item.Status = "チャット取得中";
+            }
+            RefreshQueueDisplay();
+            var isFetched = false;
+            try
+            {
+                var (exit, output) = await RunYouTubeChatReplayDownloadAsync(item, chatPath, token);
+                // チャットリプレイがまだ無いと、yt-dlp は終了コード0でファイルを作らない。
+                isFetched = File.Exists(chatPath);
+                if (isFetched)
+                    UpdateStatus("チャットリプレイを取得しました: " + chatPath);
+                else
+                    UpdateStatus($"チャットリプレイを取得できませんでした（配信中か、配信の直後でまだ用意されていない可能性があります。配信の処理が終わった後に、右クリックの「チャットリプレイを取得」で取り直せます） (exit {exit}): {item.Title} {output.Trim()}");
+            }
+            catch (OperationCanceledException)
+            {
+                UpdateStatus("チャット取得を中止しました。");
+            }
+            catch (Exception ex)
+            {
+                UpdateStatus("チャット取得でエラー: " + ex.Message);
+            }
+            finally
+            {
+                lock (queueLock)
+                {
+                    if (allItems.Contains(item))
+                    {
+                        // キャンセルの項目のチャットを後から取ることがあるので、ダウンロード完了に固定しない。
+                        item.Status = previousStatus;
+                        item.IsChatReplayMissing = !isFetched;
+                    }
+                }
+                RefreshQueueDisplay();
+            }
+
+            if (isFetched)
+                await ProcessEmojiCacheIfRequestedAsync(item, chatPath, SiteKind.YouTube, token);
+        }
+
+        async Task<(int ExitCode, string Output)> RunYouTubeChatReplayDownloadAsync(QueueItem item, string chatPath, CancellationToken token)
+        {
+            var psi = YtDlp.CreateStartInfo(LiveChatReplay.BuildDownloadArgs(item.Url, chatPath), item.CookiePath, settings);
+            using var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
+            var stderrBuffer = new StringBuilder();
+            // 取れなかった理由（絞り込みで飛ばした、チャットが無い）は標準出力に出ることがある。進捗の行が大量に出うるので、最後の数行だけ残す。
+            var stdoutTail = new Queue<string>();
+            proc.OutputDataReceived += (_, e) =>
+            {
+                if (e.Data == null) return;
+                stdoutTail.Enqueue(e.Data);
+                if (stdoutTail.Count > 3) stdoutTail.Dequeue();
+            };
+            proc.ErrorDataReceived += (_, e) => { if (e.Data != null) stderrBuffer.AppendLine(e.Data); };
+
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+            try
+            {
+                item.ActiveCts = linkedCts;
+                using var reg = linkedCts.Token.Register(() => { try { if (!proc.HasExited) proc.Kill(true); } catch { } });
+                // 中止済みのまま起動すると、WaitForExitAsync がすぐ戻り、起動した yt-dlp を止められずに残してしまう。
+                linkedCts.Token.ThrowIfCancellationRequested();
+                proc.Start();
+                try { item.ActiveProcPid = proc.Id; } catch { item.ActiveProcPid = 0; }
+                proc.BeginOutputReadLine();
+                proc.BeginErrorReadLine();
+                // WaitForExitAsync は、非同期で読んでいる標準出力・標準エラーの読み切りまで待つ。
+                await proc.WaitForExitAsync(linkedCts.Token);
+                return (proc.ExitCode, stderrBuffer.ToString() + string.Join(Environment.NewLine, stdoutTail));
+            }
+            finally
+            {
+                item.ActiveCts = null;
+                item.ActiveProcPid = 0;
+            }
+        }
+
         // yt-dlpが実際に書き出したlive_chat.jsonを探し、想定ファイル名（BuildYouTubeLiveChatPath）に
         // リネームして揃える。見つからない場合はnullを返す。
         string? AlignYouTubeLiveChatFileName(string expectedPath)
@@ -1022,9 +1159,11 @@ namespace YtGui
             }
 
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+            string previousStatus;
             lock (queueLock)
             {
                 if (!allItems.Contains(item)) return;
+                previousStatus = item.Status;
                 item.Status = "絵文字キャッシュ投入中";
             }
             RefreshQueueDisplay();
@@ -1048,7 +1187,8 @@ namespace YtGui
                 item.ActiveCts = null;
                 lock (queueLock)
                 {
-                    if (allItems.Contains(item)) item.Status = "ダウンロード完了";
+                    // キャンセルの項目のチャットを後から取ることがあるので、ダウンロード完了に固定しない。
+                    if (allItems.Contains(item)) item.Status = previousStatus;
                 }
                 RefreshQueueDisplay();
                 UpdateStatus($"完了: {item.Title}");
