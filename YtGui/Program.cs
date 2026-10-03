@@ -55,6 +55,10 @@ namespace YtGui
         readonly Button btnRetry = new() { Text = "失敗を再キュー", AutoSize = true };
         readonly CheckBox chkApplyPlaylistDefault = new() { Text = "プレイリストに既定フォーマットを適用", AutoSize = true };
         readonly Button btnSettings = new() { Text = "設定", AutoSize = true };
+        const string EmojiCacheButtonText = "絵文字キャッシュ ▼";
+        readonly Button btnEmojiCache = new() { Text = EmojiCacheButtonText, AutoSize = true };
+        readonly ContextMenuStrip emojiCacheMenu = new();
+        CancellationTokenSource? emojiCacheCts;
         readonly CheckBox chkLive = new() { Text = "ライブ", AutoSize = true };
         readonly CheckBox chkLiveFromStart = new() { Text = "配信開始から録画 (--live-from-start)", AutoSize = true };
         readonly CheckBox chkChatReplay = new() { Text = "チャットリプレイ取得", AutoSize = true };
@@ -129,6 +133,7 @@ namespace YtGui
             btnRow.Controls.Add(btnRemoveCompleted);
             btnRow.Controls.Add(btnRetry);
             btnRow.Controls.Add(btnSettings);
+            btnRow.Controls.Add(btnEmojiCache);
             btnRow.Controls.Add(btnTopMost);
 
             selectionActionButtons.Add(btnStart);
@@ -158,6 +163,8 @@ namespace YtGui
             btnRetry.Click += BtnRetry_Click;
             btnBrowseCookie.Click += BtnBrowseCookie_Click;
             btnSettings.Click += BtnSettings_Click;
+            emojiCacheMenu.Items.Add("フォルダ一括投入…", null, (_, _) => _ = StartFolderBulkEmojiCacheAsync());
+            btnEmojiCache.Click += BtnEmojiCache_Click;
             btnTopMost.Click += (_, _) =>
             {
                 TopMost = !TopMost;
@@ -275,6 +282,7 @@ namespace YtGui
         {
             progressUiTimer.Stop();
             cts?.Cancel();
+            emojiCacheCts?.Cancel();
             lock (queueLock)
             {
                 foreach (var item in allItems)
@@ -743,6 +751,75 @@ namespace YtGui
             }
         }
         void UpdateStatus(string s) => AppendLog(s);
+
+        void BtnEmojiCache_Click(object? sender, EventArgs e)
+        {
+            if (emojiCacheCts != null)
+            {
+                // 1ファイルの処理中は止まるまで時間がかかる。押し直しで反応が無く見えたりログが増えたりしないよう、ここで無効にする。
+                // 元に戻すのは StartFolderBulkEmojiCacheAsync の finally。
+                emojiCacheCts.Cancel();
+                btnEmojiCache.Text = "中止しています...";
+                btnEmojiCache.Enabled = false;
+                UpdateStatus("絵文字キャッシュの処理を中止しています...");
+                return;
+            }
+            emojiCacheMenu.Show(btnEmojiCache, new Point(0, btnEmojiCache.Height));
+        }
+
+        // emojiCacheCts は絵文字キャッシュ系の処理（PR2のチャンネル事前投入を含む）が共有する「実行中」の印。
+        // キューの停止・項目の中止からは止まらない。止めるのはボタンの「中止」とアプリの終了だけ。
+        async Task StartFolderBulkEmojiCacheAsync()
+        {
+            if (emojiCacheCts != null) return;
+            var cacheDirectory = settings.EmojiCacheOutputDirectory;
+            if (string.IsNullOrWhiteSpace(cacheDirectory))
+            {
+                MessageBox.Show(this, "設定で「絵文字キャッシュ出力フォルダ」を指定してください。", "情報", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            using var fbd = new FolderBrowserDialog();
+            if (Directory.Exists(settings.OutputDirectory)) fbd.SelectedPath = settings.OutputDirectory;
+            if (fbd.ShowDialog(this) != DialogResult.OK) return;
+            var folder = fbd.SelectedPath;
+
+            using var localCts = new CancellationTokenSource();
+            try
+            {
+                emojiCacheCts = localCts;
+                btnEmojiCache.Text = "中止";
+                await Task.Run(() => RunFolderBulkEmojiCacheAsync(folder, cacheDirectory, localCts.Token));
+            }
+            catch (OperationCanceledException) when (localCts.IsCancellationRequested)
+            {
+                UpdateStatus("フォルダ一括投入を中止しました。");
+            }
+            catch (Exception ex)
+            {
+                UpdateStatus("フォルダ一括投入でエラー: " + ex.Message);
+            }
+            finally
+            {
+                emojiCacheCts = null;
+                btnEmojiCache.Text = EmojiCacheButtonText;
+                btnEmojiCache.Enabled = true;
+            }
+        }
+
+        // バックグラウンドスレッドで動くので、コントロールには触らず UpdateStatus だけで出力する。
+        async Task RunFolderBulkEmojiCacheAsync(string folder, string cacheDirectory, CancellationToken token)
+        {
+            UpdateStatus("フォルダ一括投入を開始します: " + folder);
+            var files = EmojiCache.FindChatReplayFiles(folder, UpdateStatus, token);
+            UpdateStatus($"対象のチャットリプレイ: {files.Count}件");
+
+            var result = await EmojiCache.PopulateFilesAsync(files, folder, cacheDirectory, UpdateStatus, token);
+            var summary = $"失敗ファイル: {result.FailedFileCount}件, 絵文字の取得: {result.DownloadedCount}件, 失敗（延べ）: {result.FailedUrlCount}件";
+            if (result.IsCanceled)
+                UpdateStatus($"フォルダ一括投入を中止しました（処理済みファイル: {result.CompletedFileCount}/{result.TargetFileCount}件, {summary}）");
+            else
+                UpdateStatus($"フォルダ一括投入が完了しました（対象ファイル: {result.TargetFileCount}件, {summary}）");
+        }
 
         void AppendLog(string s)
         {
