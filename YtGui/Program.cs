@@ -785,7 +785,15 @@ namespace YtGui
                 if (string.IsNullOrWhiteSpace(path)) return;
                 if (!path.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase)) return;
                 var partPath = path + ".part";
-                if (!File.Exists(partPath)) return;
+                var hasSinglePart = File.Exists(partPath);
+                var splitPartPaths = hasSinglePart ? new List<string>() : LivePartMerger.FindSplitParts(path);
+                var action = LivePartMerger.DecideFinalizeAction(hasSinglePart, File.Exists(path), splitPartPaths.Count);
+                if (action == LiveFinalizeAction.None) return;
+                if (action == LiveFinalizeAction.RefuseUnexpectedCount)
+                {
+                    UpdateStatus($"途中のファイルが想定外の数（{splitPartPaths.Count}個）だったので、映像と音声を結合しませんでした。途中のファイルを残しています: " + string.Join("、", splitPartPaths.Select(Path.GetFileName)));
+                    return;
+                }
                 // 項目の中止（CancelItems）が止めるのは item.ActiveCts と ActiveProcPid だけ。ここで入れないと、仕上げ中の ffmpeg は止まらない。
                 item.ActiveCts = linkedCts;
                 lock (queueLock)
@@ -794,9 +802,32 @@ namespace YtGui
                 }
                 RefreshQueueDisplay();
                 var finalPath = YtDlp.MakeUniquePath(path);
-                File.Move(partPath, finalPath);
-                item.OutputFilePath = finalPath;
                 var ffmpegPath = string.IsNullOrWhiteSpace(settings.FfmpegPath) ? "ffmpeg" : settings.FfmpegPath;
+                if (action == LiveFinalizeAction.Rename)
+                {
+                    File.Move(partPath, finalPath);
+                }
+                else
+                {
+                    var mergeOutcome = await LivePartMerger.MergeAsync(ffmpegPath, splitPartPaths, finalPath, linkedCts.Token);
+                    if (mergeOutcome != LivePartMergeOutcome.Merged)
+                    {
+                        var leftNames = string.Join("、", splitPartPaths.Select(Path.GetFileName));
+                        UpdateStatus(mergeOutcome == LivePartMergeOutcome.Canceled
+                            ? "映像と音声の結合を中止しました。途中のファイルを残しています: " + leftNames
+                            : "映像と音声の結合に失敗しました。途中のファイルを残しています: " + leftNames);
+                        return;
+                    }
+                    LivePartMerger.DeleteLeftovers(splitPartPaths);
+                    if (action == LiveFinalizeAction.MergeSingle)
+                    {
+                        item.OutputFilePath = finalPath;
+                        // 音声だけの mp4 には webp を埋め込めず、ThumbnailEmbedder が失敗して画像を消してしまうので、埋め込まずに画像を残す。
+                        UpdateStatus("途中のファイルが1つだけだったので、映像（または音声）だけの動画になりました（サムネイルは埋め込んでいません）: " + Path.GetFileName(finalPath));
+                        return;
+                    }
+                }
+                item.OutputFilePath = finalPath;
                 var outcome = await ThumbnailEmbedder.EmbedAsync(ffmpegPath, finalPath, linkedCts.Token);
                 if (outcome == ThumbnailEmbedOutcome.Canceled) UpdateStatus("サムネイルの埋め込みを中止しました。");
             }
