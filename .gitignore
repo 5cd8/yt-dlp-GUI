@@ -7,3 +7,7 @@
 [Bb]in/
 [Oo]bj/
 [Pp]ublish/
+
+## 計画文書（ローカルのみ）
+design-docs-for-ai/
+user-prompt/

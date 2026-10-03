@@ -96,6 +96,106 @@ namespace YtGui
             return urls;
         }
 
+        const int FormatProbeByteCount = 4096;
+
+        // 先頭だけを見る。yt-dlpのlive_chat.jsonは1行が長く、Twitchの圧縮JSONは全体が1行なので、ReadLineでは全体を読んでしまう。
+        // YouTubeを先に判定するのは、YouTubeのチャット本文に "comments" が含まれ得るため（replayChatItemAction は1行目の先頭付近に出る）。
+        internal static SiteKind DetectChatSiteKind(ReadOnlySpan<byte> head)
+        {
+            if (head.IndexOf("replayChatItemAction"u8) >= 0) return SiteKind.YouTube;
+            if (head.IndexOf("\"streamer\""u8) >= 0 || head.IndexOf("\"comments\""u8) >= 0) return SiteKind.Twitch;
+            return SiteKind.Unsupported;
+        }
+
+        public static SiteKind DetectChatSiteKind(string path)
+        {
+            var buffer = new byte[FormatProbeByteCount];
+            using var stream = File.OpenRead(path);
+            var read = stream.ReadAtLeast(buffer, buffer.Length, throwOnEndOfStream: false);
+            return DetectChatSiteKind(buffer.AsSpan(0, read));
+        }
+
+        // AttributesToSkip の既定（Hidden | System）だと非表示ファイルが黙って対象外になるので、0にしてすべて対象にする。
+        public static IEnumerable<string> EnumerateJsonFiles(string folder) =>
+            Directory.EnumerateFiles(folder, "*.json", new EnumerationOptions
+            {
+                RecurseSubdirectories = true,
+                IgnoreInaccessible = true,
+                AttributesToSkip = 0,
+            });
+
+        public static List<(string FilePath, SiteKind Kind)> FindChatReplayFiles(string folder, Action<string> log, CancellationToken token)
+        {
+            var found = new List<(string FilePath, SiteKind Kind)>();
+            foreach (var path in EnumerateJsonFiles(folder))
+            {
+                token.ThrowIfCancellationRequested();
+                SiteKind kind;
+                try
+                {
+                    kind = DetectChatSiteKind(path);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    log($"読み込めなかったため飛ばしました: {path} ({ex.Message})");
+                    continue;
+                }
+                if (kind != SiteKind.Unsupported) found.Add((path, kind));
+            }
+            found.Sort((a, b) => string.CompareOrdinal(a.FilePath, b.FilePath));
+            return found;
+        }
+
+        public sealed record FolderBulkResult(
+            int TargetFileCount,
+            int CompletedFileCount,
+            int FailedFileCount,
+            int DownloadedCount,
+            int FailedUrlCount,
+            bool IsCanceled);
+
+        // ファイルごとに PopulateAsync を呼ぶのは、中止しても完了したファイルの分をDBに残すため。
+        // 取得0件・失敗0件の行を出さないのは、2回目以降の実行でログ欄（2000行で切り詰め）が意味の無い行で埋まるため。
+        public static async Task<FolderBulkResult> PopulateFilesAsync(
+            IReadOnlyList<(string FilePath, SiteKind Kind)> files, string folder, string cacheDirectory,
+            Action<string> log, CancellationToken token)
+        {
+            var total = files.Count;
+            var completed = 0;
+            var failedFiles = 0;
+            var downloaded = 0;
+            var failedUrls = 0;
+            try
+            {
+                for (var i = 0; i < total; i++)
+                {
+                    token.ThrowIfCancellationRequested();
+                    var (filePath, kind) = files[i];
+                    var relative = Path.GetRelativePath(folder, filePath);
+                    try
+                    {
+                        var (a, b) = await PopulateAsync(filePath, kind, cacheDirectory, log, token).ConfigureAwait(false);
+                        downloaded += a;
+                        failedUrls += b;
+                        completed++;
+                        if (a != 0 || b != 0)
+                            log($"フォルダ一括投入 ({i + 1}/{total}): {relative} — 取得 {a}件, 失敗 {b}件");
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        failedFiles++;
+                        completed++;
+                        log($"フォルダ一括投入 ({i + 1}/{total}): 処理に失敗しました: {relative} ({ex.Message})");
+                    }
+                }
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                return new FolderBulkResult(total, completed, failedFiles, downloaded, failedUrls, true);
+            }
+            return new FolderBulkResult(total, completed, failedFiles, downloaded, failedUrls, false);
+        }
+
         public static async Task<(int Downloaded, int Failed)> PopulateAsync(
             string chatJsonPath, SiteKind siteKind, string outputDirectory, Action<string> log, CancellationToken token)
         {
