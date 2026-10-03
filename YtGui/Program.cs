@@ -767,7 +767,7 @@ namespace YtGui
             emojiCacheMenu.Show(btnEmojiCache, new Point(0, btnEmojiCache.Height));
         }
 
-        // emojiCacheCts は絵文字キャッシュ系の処理（PR2のチャンネル事前投入を含む）が共有する「実行中」の印。
+        // emojiCacheCts は、フォルダ一括投入とチャンネル事前投入が共有する「実行中」の印。キュー項目の絵文字キャッシュ投入とは無関係に並行して動く。
         // キューの停止・項目の中止からは止まらない。止めるのはボタンの「中止」とアプリの終了だけ。
         async Task StartFolderBulkEmojiCacheAsync()
         {
