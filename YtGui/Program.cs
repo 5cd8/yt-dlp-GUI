@@ -933,7 +933,10 @@ namespace YtGui
 
         async Task<int> RunYtDlpAsync(QueueItem item, CancellationToken token)
         {
-            var args = new List<string> { "--no-playlist", "--newline", "--progress", "--progress-delta", "1", "--encoding", "utf-8" };
+            // ライブ配信の録画中は総サイズが分からず、進捗の行に % が付かない。進捗の表示には使えず、実行ログに流れるだけになるので、
+            // 録画が続いていると分かる程度に間引く。
+            var progressDeltaSeconds = item.IsLive ? "60" : "1";
+            var args = new List<string> { "--no-playlist", "--newline", "--progress", "--progress-delta", progressDeltaSeconds, "--encoding", "utf-8" };
             args.Add("--js-runtimes");
             args.Add("deno");
             args.Add("--remote-components");
