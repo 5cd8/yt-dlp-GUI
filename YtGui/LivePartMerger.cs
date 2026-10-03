@@ -25,7 +25,8 @@ namespace YtGui
 
         public static bool IsSplitPartFileName(string fileName, string baseName)
             // フォーマットIDは数字で始まる。`.f` で始まるだけの別の名前を拾わないよう、数字に限る。
-            => Regex.IsMatch(fileName, "^" + Regex.Escape(baseName) + @"\.f[0-9][^.]*\.[^.]+(\.part)?$",
+            // `.part` を使わない設定では、取得中のフラグメントが `<名前>.f<ID>.mp4-Frag<N>` の形で残るので、`-Frag<N>` を含む名前は除く。
+            => Regex.IsMatch(fileName, "^" + Regex.Escape(baseName) + @"\.f[0-9][^.]*\.(?![^.]*-Frag[0-9]+$)[^.]+(\.part)?$",
                 RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
         public static List<string> FindSplitParts(string outputPath)
