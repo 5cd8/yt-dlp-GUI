@@ -855,7 +855,7 @@ namespace YtGui
         async Task RunChannelPrefetchAsync(Settings currentSettings, string cacheDirectory, string channelUrls, int count, CancellationToken token)
         {
             UpdateStatus($"チャンネル事前投入を開始します（チャンネルごとに新しい順で {count}件）");
-            var store = ProcessedArchiveStore.Load(Path.Combine(Settings.GetDataDirectory(), "prefetched_archives.txt"), UpdateStatus);
+            var store = ProcessedArchiveStore.Load(Path.Combine(Settings.GetDataDirectory(), DataDirectory.ProcessedArchivesFileName), UpdateStatus);
             var workRoot = Path.Combine(Path.GetTempPath(), "YtGui", "prefetch");
             var result = await ChannelPrefetch.RunAsync(channelUrls, count, cacheDirectory, workRoot, store, new ChannelPrefetchTools(currentSettings), UpdateStatus, token);
             var summary = $"チャンネル: {result.ChannelCount}件（飛ばした: {result.FailedChannelCount}件）, アーカイブ: {result.ArchiveCount}件（処理済みのため飛ばした: {result.SkippedArchiveCount}件, 失敗した: {result.FailedArchiveCount}件）, 絵文字の取得: {result.DownloadedCount}件, 失敗（延べ）: {result.FailedUrlCount}件";
@@ -1147,8 +1147,7 @@ namespace YtGui
                         UpdateStatus($"失敗: exit {rc} (試行 {attempt}/{retryCount})");
                         try
                         {
-                            var logPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "YtGui", "last_error.log");
-                            Directory.CreateDirectory(Path.GetDirectoryName(logPath) ?? "");
+                            var logPath = Path.Combine(Settings.GetDataDirectory(), DataDirectory.ErrorLogFileName);
                             File.AppendAllText(logPath, $"\n[{DateTime.Now}] URL: {item.Url} Exit: {rc}\n{stderrBuffer}\n");
                         }
                         catch { }
