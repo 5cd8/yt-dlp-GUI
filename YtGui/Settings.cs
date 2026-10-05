@@ -18,14 +18,14 @@ namespace YtGui
         public string ChannelUrls { get; set; } = string.Empty;
         public int ChannelPrefetchCount { get; set; } = 5;
 
-        internal static string GetDataDirectory()
-        {
-            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "YtGui");
-            Directory.CreateDirectory(dir);
-            return dir;
-        }
+        static readonly Lazy<string> dataDirectory = new(() => DataDirectory.ResolveDirectory(
+            Path.Combine(AppContext.BaseDirectory, "data"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "YtGui")));
 
-        static string GetSettingsPath() => Path.Combine(GetDataDirectory(), "settings.json");
+        // 実行中は1回だけ決める。Load・Save・事前投入の記録が呼ぶたびに、書き込みの確認と移行をしないため。
+        internal static string GetDataDirectory() => dataDirectory.Value;
+
+        static string GetSettingsPath() => Path.Combine(GetDataDirectory(), DataDirectory.SettingsFileName);
 
         public static Settings Load()
         {
