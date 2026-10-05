@@ -20,6 +20,8 @@ namespace YtGui
         TextBox tbEmojiCacheDir = new TextBox() { Width = 360 };
         Button btnBrowseEmojiCacheDir = new Button() { Text = "参照" };
         CheckBox chkNoPart = new CheckBox() { Text = "ダウンロード中の .part を使わない (--no-part)", AutoSize = true };
+        TextBox tbChannelUrls = new TextBox() { Width = 360, Height = 90, Multiline = true, AcceptsReturn = true, ScrollBars = ScrollBars.Vertical, WordWrap = false };
+        NumericUpDown nudChannelPrefetchCount = new NumericUpDown() { Minimum = 1, Maximum = 100 };
         NumericUpDown nudRetry = new NumericUpDown() { Minimum = 1, Maximum = 20 };
         NumericUpDown nudDelay = new NumericUpDown() { Minimum = 1, Maximum = 300 };
         Button btnOk = new Button() { Text = "OK", DialogResult = DialogResult.OK };
@@ -38,13 +40,13 @@ namespace YtGui
             MaximizeBox = false;
             Padding = new Padding(8);
 
-            var layout = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 3, RowCount = 10 };
+            var layout = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 3, RowCount = 12 };
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
 
             layout.RowStyles.Clear();
-            for (int i = 0; i < 10; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            for (int i = 0; i < 12; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
             layout.Controls.Add(new Label { Text = "yt-dlp.exe パス", AutoSize = true }, 0, 0);
             layout.Controls.Add(tbYtDlp, 1, 0);
@@ -70,18 +72,24 @@ namespace YtGui
             layout.Controls.Add(tbEmojiCacheDir, 1, 5);
             layout.Controls.Add(btnBrowseEmojiCacheDir, 2, 5);
 
-            layout.Controls.Add(new Label { Text = "リトライ回数", AutoSize = true }, 0, 6);
-            layout.Controls.Add(nudRetry, 1, 6);
+            layout.Controls.Add(new Label { Text = "チャンネルURL (1行1件)", AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Left }, 0, 6);
+            layout.Controls.Add(tbChannelUrls, 1, 6);
 
-            layout.Controls.Add(new Label { Text = "リトライ間隔(秒)", AutoSize = true }, 0, 7);
-            layout.Controls.Add(nudDelay, 1, 7);
+            layout.Controls.Add(new Label { Text = "事前投入の件数N (チャンネルごと)", AutoSize = true }, 0, 7);
+            layout.Controls.Add(nudChannelPrefetchCount, 1, 7);
 
-            layout.Controls.Add(chkNoPart, 1, 8);
+            layout.Controls.Add(new Label { Text = "リトライ回数", AutoSize = true }, 0, 8);
+            layout.Controls.Add(nudRetry, 1, 8);
+
+            layout.Controls.Add(new Label { Text = "リトライ間隔(秒)", AutoSize = true }, 0, 9);
+            layout.Controls.Add(nudDelay, 1, 9);
+
+            layout.Controls.Add(chkNoPart, 1, 10);
 
             var pnlButtons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
             pnlButtons.Controls.Add(btnOk);
             pnlButtons.Controls.Add(btnCancel);
-            layout.Controls.Add(pnlButtons, 1, 9);
+            layout.Controls.Add(pnlButtons, 1, 11);
 
             Controls.Add(layout);
 
@@ -101,6 +109,8 @@ namespace YtGui
             tbOutputDir.Text = settings.OutputDirectory;
             tbTwitchChatTool.Text = settings.TwitchChatToolPath;
             tbEmojiCacheDir.Text = settings.EmojiCacheOutputDirectory;
+            tbChannelUrls.Text = settings.ChannelUrls;
+            nudChannelPrefetchCount.Value = Math.Max(nudChannelPrefetchCount.Minimum, Math.Min(nudChannelPrefetchCount.Maximum, settings.ChannelPrefetchCount));
             chkNoPart.Checked = settings.UseNoPart;
             nudRetry.Value = Math.Max(nudRetry.Minimum, Math.Min(nudRetry.Maximum, settings.RetryCount));
             nudDelay.Value = Math.Max(nudDelay.Minimum, Math.Min(nudDelay.Maximum, settings.RetryDelaySeconds));
@@ -114,6 +124,8 @@ namespace YtGui
             settings.OutputDirectory = tbOutputDir.Text.Trim();
             settings.TwitchChatToolPath = tbTwitchChatTool.Text.Trim();
             settings.EmojiCacheOutputDirectory = tbEmojiCacheDir.Text.Trim();
+            settings.ChannelUrls = tbChannelUrls.Text;
+            settings.ChannelPrefetchCount = (int)nudChannelPrefetchCount.Value;
             settings.UseNoPart = chkNoPart.Checked;
             settings.RetryCount = (int)nudRetry.Value;
             settings.RetryDelaySeconds = (int)nudDelay.Value;
