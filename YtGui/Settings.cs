@@ -15,13 +15,17 @@ namespace YtGui
         public bool UseNoPart { get; set; } = true;
         public int RetryCount { get; set; } = 3;
         public int RetryDelaySeconds { get; set; } = 5;
+        public string ChannelUrls { get; set; } = string.Empty;
+        public int ChannelPrefetchCount { get; set; } = 5;
 
-        static string GetSettingsPath()
+        internal static string GetDataDirectory()
         {
             var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "YtGui");
             Directory.CreateDirectory(dir);
-            return Path.Combine(dir, "settings.json");
+            return dir;
         }
+
+        static string GetSettingsPath() => Path.Combine(GetDataDirectory(), "settings.json");
 
         public static Settings Load()
         {

@@ -163,6 +163,7 @@ namespace YtGui
             btnRetry.Click += BtnRetry_Click;
             btnBrowseCookie.Click += BtnBrowseCookie_Click;
             btnSettings.Click += BtnSettings_Click;
+            emojiCacheMenu.Items.Add("チャンネル事前投入", null, (_, _) => _ = StartChannelPrefetchAsync());
             emojiCacheMenu.Items.Add("フォルダ一括投入…", null, (_, _) => _ = StartFolderBulkEmojiCacheAsync());
             btnEmojiCache.Click += BtnEmojiCache_Click;
             btnTopMost.Click += (_, _) =>
@@ -756,8 +757,8 @@ namespace YtGui
         {
             if (emojiCacheCts != null)
             {
-                // 1ファイルの処理中は止まるまで時間がかかる。押し直しで反応が無く見えたりログが増えたりしないよう、ここで無効にする。
-                // 元に戻すのは StartFolderBulkEmojiCacheAsync の finally。
+                // 1ファイル（または1アーカイブ）の処理中は止まるまで時間がかかる。押し直しで反応が無く見えたりログが増えたりしないよう、ここで無効にする。
+                // 元に戻すのは RunEmojiCacheJobAsync の finally。
                 emojiCacheCts.Cancel();
                 btnEmojiCache.Text = "中止しています...";
                 btnEmojiCache.Enabled = false;
@@ -769,34 +770,22 @@ namespace YtGui
 
         // emojiCacheCts は、フォルダ一括投入とチャンネル事前投入が共有する「実行中」の印。キュー項目の絵文字キャッシュ投入とは無関係に並行して動く。
         // キューの停止・項目の中止からは止まらない。止めるのはボタンの「中止」とアプリの終了だけ。
-        async Task StartFolderBulkEmojiCacheAsync()
+        async Task RunEmojiCacheJobAsync(string jobName, Func<CancellationToken, Task> body)
         {
-            if (emojiCacheCts != null) return;
-            var cacheDirectory = settings.EmojiCacheOutputDirectory;
-            if (string.IsNullOrWhiteSpace(cacheDirectory))
-            {
-                MessageBox.Show(this, "設定で「絵文字キャッシュ出力フォルダ」を指定してください。", "情報", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
-            }
-            using var fbd = new FolderBrowserDialog();
-            if (Directory.Exists(settings.OutputDirectory)) fbd.SelectedPath = settings.OutputDirectory;
-            if (fbd.ShowDialog(this) != DialogResult.OK) return;
-            var folder = fbd.SelectedPath;
-
             using var localCts = new CancellationTokenSource();
             try
             {
                 emojiCacheCts = localCts;
                 btnEmojiCache.Text = "中止";
-                await Task.Run(() => RunFolderBulkEmojiCacheAsync(folder, cacheDirectory, localCts.Token));
+                await Task.Run(() => body(localCts.Token));
             }
             catch (OperationCanceledException) when (localCts.IsCancellationRequested)
             {
-                UpdateStatus("フォルダ一括投入を中止しました。");
+                UpdateStatus($"{jobName}を中止しました。");
             }
             catch (Exception ex)
             {
-                UpdateStatus("フォルダ一括投入でエラー: " + ex.Message);
+                UpdateStatus($"{jobName}でエラー: {ex.Message}");
             }
             finally
             {
@@ -804,6 +793,47 @@ namespace YtGui
                 btnEmojiCache.Text = EmojiCacheButtonText;
                 btnEmojiCache.Enabled = true;
             }
+        }
+
+        bool TryGetEmojiCacheDirectory(out string cacheDirectory)
+        {
+            cacheDirectory = settings.EmojiCacheOutputDirectory;
+            if (!string.IsNullOrWhiteSpace(cacheDirectory)) return true;
+            MessageBox.Show(this, "設定で「絵文字キャッシュ出力フォルダ」を指定してください。", "情報", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return false;
+        }
+
+        async Task StartFolderBulkEmojiCacheAsync()
+        {
+            if (emojiCacheCts != null) return;
+            if (!TryGetEmojiCacheDirectory(out var cacheDirectory)) return;
+            using var fbd = new FolderBrowserDialog();
+            if (Directory.Exists(settings.OutputDirectory)) fbd.SelectedPath = settings.OutputDirectory;
+            if (fbd.ShowDialog(this) != DialogResult.OK) return;
+            var folder = fbd.SelectedPath;
+            await RunEmojiCacheJobAsync("フォルダ一括投入", token => RunFolderBulkEmojiCacheAsync(folder, cacheDirectory, token));
+        }
+
+        async Task StartChannelPrefetchAsync()
+        {
+            if (emojiCacheCts != null) return;
+            if (!TryGetEmojiCacheDirectory(out var cacheDirectory)) return;
+            // 出力先が無いと、各アーカイブのチャット（数分）を取り終えてから全件が失敗し、初回の時間が無駄になる。
+            if (!Directory.Exists(cacheDirectory))
+            {
+                MessageBox.Show(this, "絵文字キャッシュ出力フォルダが存在しません: " + cacheDirectory, "情報", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            // 開始時の値で固定する。バックグラウンドのスレッドに渡すため、UIスレッドでローカルに取る。
+            var channelUrls = settings.ChannelUrls;
+            var count = Math.Max(1, settings.ChannelPrefetchCount);
+            var currentSettings = settings;
+            if (!ChannelPrefetch.HasChannelLines(channelUrls))
+            {
+                MessageBox.Show(this, "設定で「チャンネルURL」を指定してください。", "情報", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            await RunEmojiCacheJobAsync("チャンネル事前投入", token => RunChannelPrefetchAsync(currentSettings, cacheDirectory, channelUrls, count, token));
         }
 
         // バックグラウンドスレッドで動くので、コントロールには触らず UpdateStatus だけで出力する。
@@ -819,6 +849,17 @@ namespace YtGui
                 UpdateStatus($"フォルダ一括投入を中止しました（処理済みファイル: {result.CompletedFileCount}/{result.TargetFileCount}件, {summary}）");
             else
                 UpdateStatus($"フォルダ一括投入が完了しました（対象ファイル: {result.TargetFileCount}件, {summary}）");
+        }
+
+        // バックグラウンドスレッドで動くので、コントロールには触らず UpdateStatus だけで出力する。
+        async Task RunChannelPrefetchAsync(Settings currentSettings, string cacheDirectory, string channelUrls, int count, CancellationToken token)
+        {
+            UpdateStatus($"チャンネル事前投入を開始します（チャンネルごとに新しい順で {count}件）");
+            var store = ProcessedArchiveStore.Load(Path.Combine(Settings.GetDataDirectory(), "prefetched_archives.txt"), UpdateStatus);
+            var workRoot = Path.Combine(Path.GetTempPath(), "YtGui", "prefetch");
+            var result = await ChannelPrefetch.RunAsync(channelUrls, count, cacheDirectory, workRoot, store, new ChannelPrefetchTools(currentSettings), UpdateStatus, token);
+            var summary = $"チャンネル: {result.ChannelCount}件（飛ばした: {result.FailedChannelCount}件）, アーカイブ: {result.ArchiveCount}件（処理済みのため飛ばした: {result.SkippedArchiveCount}件, 失敗した: {result.FailedArchiveCount}件）, 絵文字の取得: {result.DownloadedCount}件, 失敗（延べ）: {result.FailedUrlCount}件";
+            UpdateStatus(result.IsCanceled ? $"チャンネル事前投入を中止しました（{summary}）" : $"チャンネル事前投入が完了しました（{summary}）");
         }
 
         void AppendLog(string s)
