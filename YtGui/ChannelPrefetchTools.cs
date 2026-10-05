@@ -24,6 +24,7 @@ namespace YtGui
             var listUrl = channel.Kind == SiteKind.YouTube
                 ? channel.BaseUrl + "/streams"
                 : channel.BaseUrl + "/videos?filter=archives&sort=time";
+            // yt-dlp は強制終了せず自然に終わらせる（理由は ListingMargin のコメント）。
             var end = channel.Kind == SiteKind.YouTube ? count + ChannelPrefetch.ListingMargin : count;
             var args = new List<string>
             {
@@ -34,8 +35,6 @@ namespace YtGui
             using var proc = new Process { StartInfo = YtDlp.CreateStartInfo(args, null, settings), EnableRaisingEvents = true };
             var collector = new ArchiveListingCollector(channel.Kind, count);
             var stderrBuffer = new StringBuilder();
-            // --playlist-end だけでは先頭の配信中・配信予定の枠が数に入る。yt-dlp は強制終了せず、自然に終わるのを待つ
-            // （PyInstaller の展開フォルダ %TEMP%\_MEI* が、強制終了のたびに残るため）。
             proc.OutputDataReceived += (_, e) =>
             {
                 if (e.Data == null) return;
