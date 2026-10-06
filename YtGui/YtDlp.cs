@@ -256,7 +256,7 @@ namespace YtGui
             string fileName;
             if (hasFilePath)
             {
-                // ファイル名は加工しない。% を含むとテンプレートとして解釈されるのは、絶対パスで渡していた今と同じ。
+                // ファイル名は加工しない。% を含むとテンプレートとして解釈されるのは、一時フォルダが空欄のとき（`-o` に絶対パスを渡す形）と同じ。
                 var directory = Path.GetDirectoryName(outputFilePath!);
                 if (!string.IsNullOrEmpty(directory))
                 {
