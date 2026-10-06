@@ -13,6 +13,8 @@ namespace YtGui
         public string OutputDirectory { get; set; } = string.Empty;
         public string EmojiCacheOutputDirectory { get; set; } = string.Empty;
         public bool UseNoPart { get; set; } = true;
+        public string TempDirectory { get; set; } = string.Empty;
+        public int ConcurrentFragments { get; set; } = 4;
         public int RetryCount { get; set; } = 3;
         public int RetryDelaySeconds { get; set; } = 5;
         public string ChannelUrls { get; set; } = string.Empty;

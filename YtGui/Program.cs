@@ -1087,21 +1087,8 @@ namespace YtGui
                 args.Add("live_chat");
             }
 
-            if (!string.IsNullOrWhiteSpace(item.OutputFilePath))
-            {
-                args.Add("-o");
-                args.Add(item.OutputFilePath);
-            }
-            else if (!string.IsNullOrWhiteSpace(settings.OutputDirectory))
-            {
-                args.Add("-o");
-                args.Add(Path.Combine(settings.OutputDirectory, "%(title)s.%(ext)s"));
-            }
-            else
-            {
-                args.Add("-o");
-                args.Add("%(title)s.%(ext)s");
-            }
+            args.AddRange(YtDlp.BuildOutputArgs(item.OutputFilePath, settings.OutputDirectory, settings.TempDirectory, item.IsLive));
+            args.AddRange(YtDlp.BuildConcurrentFragmentsArgs(settings.ConcurrentFragments, item.IsLive));
             if (item.IsLive)
                 args.Add(item.LiveFromStart ? "--live-from-start" : "--no-live-from-start");
             args.Add(item.Url);

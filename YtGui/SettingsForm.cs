@@ -15,6 +15,8 @@ namespace YtGui
         Button btnBrowseCookie = new Button() { Text = "参照" };
         TextBox tbOutputDir = new TextBox() { Width = 360 };
         Button btnBrowseOutput = new Button() { Text = "参照" };
+        TextBox tbTempDir = new TextBox() { Width = 360 };
+        Button btnBrowseTempDir = new Button() { Text = "参照" };
         TextBox tbTwitchChatTool = new TextBox() { Width = 360 };
         Button btnBrowseTwitchChatTool = new Button() { Text = "参照" };
         TextBox tbEmojiCacheDir = new TextBox() { Width = 360 };
@@ -24,6 +26,7 @@ namespace YtGui
         NumericUpDown nudChannelPrefetchCount = new NumericUpDown() { Minimum = 1, Maximum = 100 };
         NumericUpDown nudRetry = new NumericUpDown() { Minimum = 1, Maximum = 20 };
         NumericUpDown nudDelay = new NumericUpDown() { Minimum = 1, Maximum = 300 };
+        NumericUpDown nudConcurrentFragments = new NumericUpDown() { Minimum = 1, Maximum = 16 };
         Button btnOk = new Button() { Text = "OK", DialogResult = DialogResult.OK };
         Button btnCancel = new Button() { Text = "キャンセル", DialogResult = DialogResult.Cancel };
 
@@ -40,13 +43,13 @@ namespace YtGui
             MaximizeBox = false;
             Padding = new Padding(8);
 
-            var layout = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 3, RowCount = 12 };
+            var layout = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 3, RowCount = 14 };
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
 
             layout.RowStyles.Clear();
-            for (int i = 0; i < 12; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            for (int i = 0; i < 14; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
             layout.Controls.Add(new Label { Text = "yt-dlp.exe パス", AutoSize = true }, 0, 0);
             layout.Controls.Add(tbYtDlp, 1, 0);
@@ -64,32 +67,39 @@ namespace YtGui
             layout.Controls.Add(tbOutputDir, 1, 3);
             layout.Controls.Add(btnBrowseOutput, 2, 3);
 
-            layout.Controls.Add(new Label { Text = "Twitchチャット取得ツール パス (TwitchDownloaderCLI.exe)", AutoSize = true }, 0, 4);
-            layout.Controls.Add(tbTwitchChatTool, 1, 4);
-            layout.Controls.Add(btnBrowseTwitchChatTool, 2, 4);
+            layout.Controls.Add(new Label { Text = "一時フォルダ (空欄なら出力先で処理する)", AutoSize = true }, 0, 4);
+            layout.Controls.Add(tbTempDir, 1, 4);
+            layout.Controls.Add(btnBrowseTempDir, 2, 4);
 
-            layout.Controls.Add(new Label { Text = "絵文字キャッシュ出力フォルダ (emoji_cache.sqlite 配置先)", AutoSize = true }, 0, 5);
-            layout.Controls.Add(tbEmojiCacheDir, 1, 5);
-            layout.Controls.Add(btnBrowseEmojiCacheDir, 2, 5);
+            layout.Controls.Add(new Label { Text = "Twitchチャット取得ツール パス (TwitchDownloaderCLI.exe)", AutoSize = true }, 0, 5);
+            layout.Controls.Add(tbTwitchChatTool, 1, 5);
+            layout.Controls.Add(btnBrowseTwitchChatTool, 2, 5);
 
-            layout.Controls.Add(new Label { Text = "チャンネルURL (1行1件)", AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Left }, 0, 6);
-            layout.Controls.Add(tbChannelUrls, 1, 6);
+            layout.Controls.Add(new Label { Text = "絵文字キャッシュ出力フォルダ (emoji_cache.sqlite 配置先)", AutoSize = true }, 0, 6);
+            layout.Controls.Add(tbEmojiCacheDir, 1, 6);
+            layout.Controls.Add(btnBrowseEmojiCacheDir, 2, 6);
 
-            layout.Controls.Add(new Label { Text = "事前投入の件数N (チャンネルごと)", AutoSize = true }, 0, 7);
-            layout.Controls.Add(nudChannelPrefetchCount, 1, 7);
+            layout.Controls.Add(new Label { Text = "チャンネルURL (1行1件)", AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Left }, 0, 7);
+            layout.Controls.Add(tbChannelUrls, 1, 7);
 
-            layout.Controls.Add(new Label { Text = "リトライ回数", AutoSize = true }, 0, 8);
-            layout.Controls.Add(nudRetry, 1, 8);
+            layout.Controls.Add(new Label { Text = "事前投入の件数N (チャンネルごと)", AutoSize = true }, 0, 8);
+            layout.Controls.Add(nudChannelPrefetchCount, 1, 8);
 
-            layout.Controls.Add(new Label { Text = "リトライ間隔(秒)", AutoSize = true }, 0, 9);
-            layout.Controls.Add(nudDelay, 1, 9);
+            layout.Controls.Add(new Label { Text = "リトライ回数", AutoSize = true }, 0, 9);
+            layout.Controls.Add(nudRetry, 1, 9);
 
-            layout.Controls.Add(chkNoPart, 1, 10);
+            layout.Controls.Add(new Label { Text = "リトライ間隔(秒)", AutoSize = true }, 0, 10);
+            layout.Controls.Add(nudDelay, 1, 10);
+
+            layout.Controls.Add(new Label { Text = "並列数 (1で無効。ライブ録画には適用しない)", AutoSize = true }, 0, 11);
+            layout.Controls.Add(nudConcurrentFragments, 1, 11);
+
+            layout.Controls.Add(chkNoPart, 1, 12);
 
             var pnlButtons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
             pnlButtons.Controls.Add(btnOk);
             pnlButtons.Controls.Add(btnCancel);
-            layout.Controls.Add(pnlButtons, 1, 11);
+            layout.Controls.Add(pnlButtons, 1, 13);
 
             Controls.Add(layout);
 
@@ -97,6 +107,7 @@ namespace YtGui
             btnBrowseFf.Click += (s, e) => { using var ofd = new OpenFileDialog(); ofd.Filter = "Executables (*.exe)|*.exe|All files|*.*"; if (ofd.ShowDialog() == DialogResult.OK) tbFfmpeg.Text = ofd.FileName; };
             btnBrowseCookie.Click += (s, e) => { using var ofd = new OpenFileDialog(); ofd.Filter = "Cookies (cookies.txt)|cookies.txt|All files|*.*"; if (ofd.ShowDialog() == DialogResult.OK) tbCookie.Text = ofd.FileName; };
             btnBrowseOutput.Click += (s, e) => { using var fbd = new FolderBrowserDialog(); if (fbd.ShowDialog() == DialogResult.OK) tbOutputDir.Text = fbd.SelectedPath; };
+            btnBrowseTempDir.Click += (s, e) => { using var fbd = new FolderBrowserDialog(); if (fbd.ShowDialog() == DialogResult.OK) tbTempDir.Text = fbd.SelectedPath; };
             btnBrowseTwitchChatTool.Click += (s, e) => { using var ofd = new OpenFileDialog(); ofd.Filter = "Executables (*.exe)|*.exe|All files|*.*"; if (ofd.ShowDialog() == DialogResult.OK) tbTwitchChatTool.Text = ofd.FileName; };
             btnBrowseEmojiCacheDir.Click += (s, e) => { using var fbd = new FolderBrowserDialog(); if (fbd.ShowDialog() == DialogResult.OK) tbEmojiCacheDir.Text = fbd.SelectedPath; };
 
@@ -107,6 +118,7 @@ namespace YtGui
             tbFfmpeg.Text = settings.FfmpegPath;
             tbCookie.Text = settings.DefaultCookiePath;
             tbOutputDir.Text = settings.OutputDirectory;
+            tbTempDir.Text = settings.TempDirectory;
             tbTwitchChatTool.Text = settings.TwitchChatToolPath;
             tbEmojiCacheDir.Text = settings.EmojiCacheOutputDirectory;
             tbChannelUrls.Text = settings.ChannelUrls;
@@ -114,14 +126,24 @@ namespace YtGui
             chkNoPart.Checked = settings.UseNoPart;
             nudRetry.Value = Math.Max(nudRetry.Minimum, Math.Min(nudRetry.Maximum, settings.RetryCount));
             nudDelay.Value = Math.Max(nudDelay.Minimum, Math.Min(nudDelay.Maximum, settings.RetryDelaySeconds));
+            nudConcurrentFragments.Value = Math.Max(nudConcurrentFragments.Minimum, Math.Min(nudConcurrentFragments.Maximum, settings.ConcurrentFragments));
         }
 
         private void BtnOk_Click(object? sender, EventArgs e)
         {
+            // 相対パスの temp: は出力先からの相対になり、中間ファイルが出力先の中に作られて一時フォルダの意味が無くなる（docs/adr/0006参照）
+            var tempDirectory = tbTempDir.Text.Trim();
+            if (tempDirectory.Length > 0 && !Path.IsPathRooted(tempDirectory))
+            {
+                MessageBox.Show("一時フォルダは絶対パスで指定してください。", "設定", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                DialogResult = DialogResult.None;
+                return;
+            }
             settings.YtDlpPath = tbYtDlp.Text.Trim();
             settings.FfmpegPath = tbFfmpeg.Text.Trim();
             settings.DefaultCookiePath = tbCookie.Text.Trim();
             settings.OutputDirectory = tbOutputDir.Text.Trim();
+            settings.TempDirectory = tempDirectory;
             settings.TwitchChatToolPath = tbTwitchChatTool.Text.Trim();
             settings.EmojiCacheOutputDirectory = tbEmojiCacheDir.Text.Trim();
             settings.ChannelUrls = tbChannelUrls.Text;
@@ -129,6 +151,7 @@ namespace YtGui
             settings.UseNoPart = chkNoPart.Checked;
             settings.RetryCount = (int)nudRetry.Value;
             settings.RetryDelaySeconds = (int)nudDelay.Value;
+            settings.ConcurrentFragments = (int)nudConcurrentFragments.Value;
             try { settings.Save(); }
             catch (Exception ex)
             {
