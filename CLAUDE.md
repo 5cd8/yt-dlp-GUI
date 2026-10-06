@@ -15,6 +15,8 @@ dotnet run --project YtGui/YtGui.csproj
 dotnet publish YtGui/YtGui.csproj -c Release -o publish/<フォルダ名>
 ```
 
+`publish` のときだけ、`YtGui.csproj` の設定でランタイム同梱の単一ファイル（`YtGui.exe` 1つ）になる。`build`・`run` の出力先は変わらない。設定・ログは実行時に、exeの隣の `data\` に作られる。
+
 テストプロジェクトは無い。純粋なロジックは、スクラッチに作るハーネスで検証する（`~/.claude/rules/csharp-general.md` 項目14）。起動中の `YtGui.exe` があると再ビルドに失敗するので、終了してよいか確認してからビルドする。
 
 ## 構成
