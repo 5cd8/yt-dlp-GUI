@@ -235,6 +235,59 @@ namespace YtGui
             return vExt ?? aExt ?? "mp4";
         }
 
+        // 一時フォルダを使うときは、-o を絶対パスにすると yt-dlp が -P を無視するので、出力先を -P home: で渡し、-o はファイル名だけにする（docs/adr/0006参照）。
+        // ライブ録画は、仕上げが出力先の途中ファイルを探すので一時フォルダを使わない。
+        // 一時フォルダは検証も加工もしない。相対パスだと出力先からの相対になるため、絶対パスかどうかは設定画面が保存時に確かめる。
+        public static List<string> BuildOutputArgs(string? outputFilePath, string? outputDirectory, string? tempDirectory, bool isLive)
+        {
+            var useTemp = !isLive && !string.IsNullOrWhiteSpace(tempDirectory);
+            var hasFilePath = !string.IsNullOrWhiteSpace(outputFilePath);
+            var hasDirectory = !string.IsNullOrWhiteSpace(outputDirectory);
+            const string TitleTemplate = "%(title)s.%(ext)s";
+
+            if (!useTemp)
+            {
+                if (hasFilePath) return new List<string> { "-o", outputFilePath! };
+                if (hasDirectory) return new List<string> { "-o", Path.Combine(outputDirectory!, TitleTemplate) };
+                return new List<string> { "-o", TitleTemplate };
+            }
+
+            var args = new List<string>();
+            string fileName;
+            if (hasFilePath)
+            {
+                // ファイル名は加工しない。% を含むとテンプレートとして解釈されるのは、一時フォルダが空欄のとき（`-o` に絶対パスを渡す形）と同じ。
+                var directory = Path.GetDirectoryName(outputFilePath!);
+                if (!string.IsNullOrEmpty(directory))
+                {
+                    args.Add("-P");
+                    args.Add("home:" + directory);
+                }
+                fileName = Path.GetFileName(outputFilePath!);
+            }
+            else
+            {
+                if (hasDirectory)
+                {
+                    args.Add("-P");
+                    args.Add("home:" + outputDirectory);
+                }
+                fileName = TitleTemplate;
+            }
+            args.Add("-P");
+            args.Add("temp:" + tempDirectory);
+            args.Add("-o");
+            args.Add(fileName);
+            return args;
+        }
+
+        // ライブ録画は対象外。断片が無い取得では yt-dlp が無視するだけで害は無い。
+        public static List<string> BuildConcurrentFragmentsArgs(int concurrentFragments, bool isLive)
+        {
+            if (isLive || concurrentFragments < 2) return new List<string>();
+            return new List<string> { "-N", concurrentFragments.ToString(System.Globalization.CultureInfo.InvariantCulture) };
+        }
+
         public static ProcessStartInfo CreateStartInfo(IEnumerable<string> args, string? cookie, Settings current)
         {
             var exe = string.IsNullOrWhiteSpace(current.YtDlpPath) ? "yt-dlp" : current.YtDlpPath;
