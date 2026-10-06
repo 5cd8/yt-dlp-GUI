@@ -67,7 +67,7 @@ namespace YtGui
             layout.Controls.Add(tbOutputDir, 1, 3);
             layout.Controls.Add(btnBrowseOutput, 2, 3);
 
-            layout.Controls.Add(new Label { Text = "一時フォルダ (空欄なら出力先で処理する)", AutoSize = true }, 0, 4);
+            layout.Controls.Add(new Label { Text = "一時フォルダ (空欄なら出力先で処理する。ライブ録画には適用しない)", AutoSize = true }, 0, 4);
             layout.Controls.Add(tbTempDir, 1, 4);
             layout.Controls.Add(btnBrowseTempDir, 2, 4);
 
@@ -133,7 +133,7 @@ namespace YtGui
         {
             // 相対パスの temp: は出力先からの相対になり、中間ファイルが出力先の中に作られて一時フォルダの意味が無くなる（docs/adr/0006参照）
             var tempDirectory = tbTempDir.Text.Trim();
-            if (tempDirectory.Length > 0 && !Path.IsPathRooted(tempDirectory))
+            if (tempDirectory.Length > 0 && !Path.IsPathFullyQualified(tempDirectory))
             {
                 MessageBox.Show("一時フォルダは絶対パスで指定してください。", "設定", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 DialogResult = DialogResult.None;
