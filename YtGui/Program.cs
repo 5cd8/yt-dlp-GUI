@@ -795,7 +795,6 @@ namespace YtGui
             }
         }
 
-        // 未設定でも存在しなくても、RunEmojiCacheJobAsync を呼ぶ前にここで止める。
         // 出力先が無いと、チャンネル事前投入では各アーカイブのチャット（数分）を取り終えてから全件が失敗し、初回の時間が無駄になる。
         bool TryGetExistingEmojiCacheDirectory(out string cacheDirectory)
         {
