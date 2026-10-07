@@ -32,6 +32,7 @@ dotnet publish YtGui/YtGui.csproj -c Release -o publish/<フォルダ名>
 | `YtGui/LivePartMerger.cs` | ライブ録画の仕上げで、映像と音声に分かれた途中ファイル（`<名前>.f<ID>.<拡張子>` か `<名前>.f<ID>.<拡張子>.part`）を探し、ffmpeg で再エンコードせずに結合し、結合できたら途中ファイルを消す。トークンで止められる |
 | `YtGui/ExecutionLog.cs` | 実行ログ（画面下部のログ欄）への追記と、古い行の切り詰め。yt-dlp の出力のうち、ffmpeg の雑音の行の判定。ログ欄のテキストは `ExecutionLogWriter` だけが書き換える |
 | `YtGui/LiveChatReplay.cs` | ライブ録画のチャットリプレイを録画の後に取るときの、UIに依存しない判定と組み立て（対象かどうか、「チャット未取得」の表示、右クリックでキューに入れてよいか、yt-dlp の引数） |
+| `YtGui/EmojiCacheOutputPath.cs` | 絵文字キャッシュの出力先の判定（未設定・存在しない・存在する）と、「出力先が存在しません: <パス>」のメッセージ。UIに依存しない |
 | `YtGui/QueueProcessingLifecycle.cs` | キュー処理の状態（動いていない・動いている・停止中）と、自動開始を予約するか、キュー処理の終わりに次を始めるかの、UIに依存しない判定 |
 | `YtGui/FormatSelectionForm.cs`・`MediaFormat.cs` | フォーマット一覧の解析と選択画面 |
 | `YtGui/DataDirectory.cs` | データフォルダ（設定・エラーログ・処理済みアーカイブの記録を置く）の決定と、`%APPDATA%\YtGui\` からの移行 |
@@ -56,6 +57,7 @@ dotnet publish YtGui/YtGui.csproj -c Release -o publish/<フォルダ名>
   - 終端のステータス（完了・キャンセル・失敗）は、文字列で表示する。
 - **`await` の後にキュー項目を書き換えるときは、事前に `allItems.Contains(item)` を確かめる。**
 - **項目の中止（「選択を中止」「削除」）が止めるのは、`item.ActiveCts` のトークンと `item.ActiveProcPid` のプロセスだけ。** キュー全体の `token` を渡しているだけの処理は止まらない。動画取得の後に止められる処理を足すときは、`CreateLinkedTokenSource` で作ったトークンを `item.ActiveCts` に入れ、そのトークンを処理に渡す。
+- **絵文字キャッシュの出力先フォルダは、投入の前に存在を確かめ、無ければ作らずに知らせる**（`EmojiCacheOutputPath.Classify`。誤ったパスに作ると別の場所へ投入し続けるため）。フォルダ一括投入・チャンネル事前投入は `MessageBox` で開始前に止め、キュー項目の投入は実行ログに警告して絵文字キャッシュ投入だけを飛ばす（ステータスは変えない。ADR 0001）。設定画面では確かめない（ドライブ未接続や、これから作るフォルダを設定する場合があるため）。
 - **`emoji_cache.sqlite` はvlc-chatと共有する契約。** 次のものを変えるときは、両方のリポジトリを揃える。
   - テーブル：`emoji_cache(url TEXT PRIMARY KEY, data BLOB NOT NULL)`
   - TwitchのエモートURLの形：`https://static-cdn.jtvnw.net/emoticons/v2/{id}/default/dark/2.0`
