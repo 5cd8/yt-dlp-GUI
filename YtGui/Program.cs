@@ -795,18 +795,28 @@ namespace YtGui
             }
         }
 
-        bool TryGetEmojiCacheDirectory(out string cacheDirectory)
+        // 未設定でも存在しなくても、RunEmojiCacheJobAsync を呼ぶ前にここで止める。
+        // 出力先が無いと、チャンネル事前投入では各アーカイブのチャット（数分）を取り終えてから全件が失敗し、初回の時間が無駄になる。
+        bool TryGetExistingEmojiCacheDirectory(out string cacheDirectory)
         {
             cacheDirectory = settings.EmojiCacheOutputDirectory;
-            if (!string.IsNullOrWhiteSpace(cacheDirectory)) return true;
-            MessageBox.Show(this, "設定で「絵文字キャッシュ出力フォルダ」を指定してください。", "情報", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            return false;
+            switch (EmojiCacheOutputPath.Classify(cacheDirectory))
+            {
+                case EmojiCacheOutputState.NotConfigured:
+                    MessageBox.Show(this, "設定で「絵文字キャッシュ出力フォルダ」を指定してください。", "情報", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return false;
+                case EmojiCacheOutputState.Missing:
+                    MessageBox.Show(this, EmojiCacheOutputPath.BuildMissingMessage(cacheDirectory), "情報", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return false;
+                default:
+                    return true;
+            }
         }
 
         async Task StartFolderBulkEmojiCacheAsync()
         {
             if (emojiCacheCts != null) return;
-            if (!TryGetEmojiCacheDirectory(out var cacheDirectory)) return;
+            if (!TryGetExistingEmojiCacheDirectory(out var cacheDirectory)) return;
             using var fbd = new FolderBrowserDialog();
             if (Directory.Exists(settings.OutputDirectory)) fbd.SelectedPath = settings.OutputDirectory;
             if (fbd.ShowDialog(this) != DialogResult.OK) return;
@@ -817,13 +827,7 @@ namespace YtGui
         async Task StartChannelPrefetchAsync()
         {
             if (emojiCacheCts != null) return;
-            if (!TryGetEmojiCacheDirectory(out var cacheDirectory)) return;
-            // 出力先が無いと、各アーカイブのチャット（数分）を取り終えてから全件が失敗し、初回の時間が無駄になる。
-            if (!Directory.Exists(cacheDirectory))
-            {
-                MessageBox.Show(this, "絵文字キャッシュ出力フォルダが存在しません: " + cacheDirectory, "情報", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
-            }
+            if (!TryGetExistingEmojiCacheDirectory(out var cacheDirectory)) return;
             // 開始時の値で固定する。バックグラウンドのスレッドに渡すため、UIスレッドでローカルに取る。
             var channelUrls = settings.ChannelUrls;
             var count = Math.Max(1, settings.ChannelPrefetchCount);
@@ -1340,7 +1344,16 @@ namespace YtGui
 
         async Task ProcessEmojiCacheIfRequestedAsync(QueueItem item, string chatJsonPath, SiteKind siteKind, CancellationToken token)
         {
-            if (string.IsNullOrWhiteSpace(settings.EmojiCacheOutputDirectory)) return;
+            var cacheDirectory = settings.EmojiCacheOutputDirectory;
+            switch (EmojiCacheOutputPath.Classify(cacheDirectory))
+            {
+                case EmojiCacheOutputState.NotConfigured:
+                    return;
+                case EmojiCacheOutputState.Missing:
+                    // ステータスには影響させない（ADR 0001）。
+                    UpdateStatus($"絵文字キャッシュ投入をスキップしました（{EmojiCacheOutputPath.BuildMissingMessage(cacheDirectory)}）: {item.Title}");
+                    return;
+            }
 
             var resolvedPath = chatJsonPath;
             if (!File.Exists(resolvedPath))
@@ -1362,7 +1375,7 @@ namespace YtGui
             {
                 // 項目の中止（CancelItems）が止めるのは item.ActiveCts と ActiveProcPid だけ。プロセスを持たないこの処理は、キュー全体の token をそのまま渡しても止まらない。
                 item.ActiveCts = linkedCts;
-                var (downloaded, failed) = await EmojiCache.PopulateAsync(resolvedPath, siteKind, settings.EmojiCacheOutputDirectory, UpdateStatus, linkedCts.Token);
+                var (downloaded, failed) = await EmojiCache.PopulateAsync(resolvedPath, siteKind, cacheDirectory, UpdateStatus, linkedCts.Token);
                 UpdateStatus($"絵文字キャッシュ投入が完了しました（取得: {downloaded}件, 失敗: {failed}件）");
             }
             catch (OperationCanceledException)
