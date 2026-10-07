@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -279,6 +280,43 @@ namespace YtGui
             args.Add("-o");
             args.Add(fileName);
             return args;
+        }
+
+        // 同じ項目（正規化したURL・フォーマット・音声のみ・コーデックが同じ）なら同じ名前、1つでも違えば別の名前（docs/adr/0007参照）。
+        // コーデックは音声のみがオフでも入れる（Issueの確定要件）。動画でコーデックの値だけ変えた再実行は再開できないが、混ざることは無い。
+        public static string ComputeItemTempFolderName(string url, string? selectedFormat, bool audioOnly, string? codec)
+        {
+            var normalizedUrl = NormalizeUrl(url).Url;
+            var key = string.Join("\n",
+                normalizedUrl,
+                (selectedFormat ?? string.Empty).Trim(),
+                audioOnly ? "audio" : "video",
+                (codec ?? string.Empty).Trim());
+            var hash = SHA256.HashData(Encoding.UTF8.GetBytes(key));
+            return Convert.ToHexString(hash, 0, 6).ToLowerInvariant();
+        }
+
+        // 一時フォルダが空欄、またはライブ録画のときは空文字を返す。呼び出し側は、これを BuildOutputArgs の tempDirectory にそのまま渡す。
+        // 条件は BuildOutputArgs の useTemp と同じ。
+        public static string BuildItemTempDirectory(string? tempDirectory, string url, string? selectedFormat, bool audioOnly, string? codec, bool isLive)
+        {
+            if (isLive || string.IsNullOrWhiteSpace(tempDirectory)) return string.Empty;
+            return Path.Combine(tempDirectory, ComputeItemTempFolderName(url, selectedFormat, audioOnly, codec));
+        }
+
+        // 空のときだけ消す（中にファイルやフォルダがあれば消さない）。消せなくても取得の成否には関係しないので、結果は呼び出し側が使わなくてよい。
+        // 空かどうかの確認と削除を1回の呼び出しにして、確認の後に別のプロセスが置いたファイルを消さないようにする。
+        public static bool TryDeleteEmptyDirectory(string path)
+        {
+            try
+            {
+                Directory.Delete(path, recursive: false);
+                return true;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
         }
 
         // ライブ録画は対象外。断片が無い取得では yt-dlp が無視するだけで害は無い。

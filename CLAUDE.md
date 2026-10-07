@@ -3,7 +3,7 @@
 yt-dlpのGUIラッパー（WinForms、`net8.0-windows`）。URLをキューに積み、動画または音声を順にダウンロードする。オプションで、チャットリプレイの取得と、絵文字・エモートのキャッシュの事前投入も行う。再生や表示の機能は持たない（純粋なダウンローダー）。
 
 - 用語：[CONTEXT.md](CONTEXT.md)（キュー項目・ステータス・動画取得・チャット取得などの区別が厳密）
-- 設計判断：[docs/adr/](docs/adr/)。チャット取得の失敗とステータスの関係、Twitchの逐次実行、`--sub-langs live_chat` について書いてある。ライブ録画のチャットを録画の後にアーカイブから取る理由（0005）も。チャット取得まわりを変える前に読む。一時フォルダを使うときに出力先を `-P` で渡す理由（0006）も。
+- 設計判断：[docs/adr/](docs/adr/)。チャット取得の失敗とステータスの関係、Twitchの逐次実行、`--sub-langs live_chat` について書いてある。ライブ録画のチャットを録画の後にアーカイブから取る理由（0005）も。チャット取得まわりを変える前に読む。一時フォルダを使うときに出力先を `-P` で渡す理由（0006）も。一時フォルダを項目ごとのサブフォルダに分ける理由（0007）も。
 - 絵文字キャッシュの要件：[動画ダウンローダー_絵文字キャッシュ事前投入機能_要件定義書.md](動画ダウンローダー_絵文字キャッシュ事前投入機能_要件定義書.md)
 - 絵文字キャッシュの検証用ビューア：https://github.com/5cd8/emoji-cache-viewer（別リポジトリ。ローカルは `../emoji-cache-viewer`）。`emoji_cache.sqlite` を読み取り専用で開き、絵文字を画像の一覧で表示する。絵文字キャッシュ投入（キュー項目・フォルダ一括投入・チャンネル事前投入）で絵文字が入ったかを確かめるときに使う。このリポジトリの一部ではない。
 
@@ -24,7 +24,7 @@ dotnet publish YtGui/YtGui.csproj -c Release -o publish/<フォルダ名>
 | ファイル | 責務 |
 |---|---|
 | `YtGui/Program.cs` | `MainForm` と `QueueItem`。キュー処理（`ProcessQueueAsync` → `RunYtDlpAsync` → `FinalizeLiveOutputFileAsync` → `ProcessChatReplayIfRequestedAsync`（ライブは `FetchYouTubeLiveChatReplayAsync`）→ `ProcessEmojiCacheIfRequestedAsync`）、キュー処理の開始・停止・終わりの受け取り（`StartProcessing`・`StopProcessing`・`OnQueueProcessingFinished`）、stdoutからの進捗の解析、`ListView` のオーナードロー。フォルダ一括投入（`StartFolderBulkEmojiCacheAsync` → `RunFolderBulkEmojiCacheAsync`）、チャンネル事前投入（`StartChannelPrefetchAsync` → `RunChannelPrefetchAsync`）。両者が共有する実行の枠は `RunEmojiCacheJobAsync` |
-| `YtGui/YtDlp.cs` | yt-dlpの呼び出し、URLの正規化、サイト種別の判定、出力パスの組み立て、出力先・並列数の引数の組み立て |
+| `YtGui/YtDlp.cs` | yt-dlpの呼び出し、URLの正規化、サイト種別の判定、出力パスの組み立て、出力先・並列数の引数の組み立て、一時フォルダの項目ごとのサブフォルダ名の計算 |
 | `YtGui/EmojiCache.cs` | チャットJSONから絵文字・エモートのURLを抽出してダウンロードし、`emoji_cache.sqlite` に投入する。フォルダ一括投入のための、チャットJSONの形式判定（`DetectChatSiteKind`）・列挙（`FindChatReplayFiles`）と、複数ファイルへの投入（`PopulateFilesAsync`） |
 | `YtGui/ChannelPrefetch.cs` | チャンネル事前投入のUIに依存しない部分。チャンネルURLの解釈、アーカイブ一覧の行の解釈とN件での打ち切り（`ArchiveListingCollector`）、処理済みアーカイブの記録（`ProcessedArchiveStore`）、全体の流れ（`RunAsync`） |
 | `YtGui/ChannelPrefetchTools.cs` | チャンネル事前投入で外部プロセス（yt-dlp・TwitchDownloaderCLI）を呼ぶ。アーカイブ一覧の取得と、チャットリプレイの取得。キュー項目の `ActiveCts` には触らない |
@@ -49,7 +49,7 @@ dotnet publish YtGui/YtGui.csproj -c Release -o publish/<フォルダ名>
 - **チャンネル事前投入の「N件」は、YouTubeでは `was_live` の枠だけを新しい順に数え、処理済みで飛ばした枠も数に入れる。** 一覧は `--playlist-end (N + ListingMargin)` で絞り、yt-dlp を自然終了させる（`Kill` で止めると `%TEMP%\_MEI*` が毎回残る）。`--playlist-end N` だけにしない（先頭の配信中・配信予定の枠が数に入るため）。
 - **チャンネル事前投入は、アーカイブごとに取得と投入が両方終わってから処理済みに記録する**（データフォルダの `prefetched_archives.txt`）。取得できたかはファイルの有無で決める（ADR 0005）。絵文字の失敗件数に関わらず記録する（`PopulateAsync` は新規分だけを取るので、失敗で未処理に戻すと毎回チャット全体を取り直すため）。例外が出たときだけ記録しない。
 - **アプリが書き出す3ファイル（`settings.json`・`last_error.log`・`prefetched_archives.txt`）の置き場は、`Settings.GetDataDirectory()` だけが決める。** 通常は `<実行ファイルのフォルダ>\data`。そこに書き込めないとき（実際に一時ファイルを作って確かめる）だけ `%APPDATA%\YtGui\`。判定は実行中に1回。移行は、起動のたびに旧フォルダから `data` に無いファイルだけをコピーする（元は消さない。`data` 側を消すと旧フォルダの内容が戻るので、リセットするには両方を消す）。新しいファイルを書き出す機能を足すときは、パスを自前で組み立てず、このフォルダを使う。
-- **動画取得の出力先は、一時フォルダを設定したときだけ `-P home:`・`-P temp:` ＋ファイル名だけの `-o` で渡す**（絶対パスの `-o` だと `-P` が無視される。ADR 0006）。ライブ録画には一時フォルダを渡さない（仕上げが出力先の途中ファイルを探すため）。`-N`（並列数）も渡さない（Issue #34の確定事項）。失敗・中止で一時フォルダに残った途中のファイル（`.part` 等）は消さない（再実行・リトライの再開に使うため）。
+- **動画取得の出力先は、一時フォルダを設定したときだけ `-P home:`・`-P temp:` ＋ファイル名だけの `-o` で渡す**（絶対パスの `-o` だと `-P` が無視される。ADR 0006）。`-P temp:` は `<一時フォルダ>\<ハッシュ12桁>`（正規化したURL・`SelectedFormat`・`AudioOnly`・`Codec` から計算。`YtDlp.BuildItemTempDirectory`）。同名の別動画や同じURLの別フォーマットが、一時フォルダに残った途中ファイルの続きとして取られるのを防ぐ。同じURL・同じフォーマットの再実行は同じサブフォルダになり、再開できる（ADR 0007）。ライブ録画には一時フォルダを渡さない（仕上げが出力先の途中ファイルを探すため）。`-N`（並列数）も渡さない（Issue #34の確定事項）。失敗・中止で一時フォルダに残った途中のファイル（`.part` 等）は消さない（再実行・リトライの再開に使うため）。成功（exit 0）後にだけ、空になったサブフォルダを消す（再帰なし、失敗は無視）。
 - **後の処理が出力ファイル名を書き換えることがある**（ライブの後処理での衝突回避など）。そこから導くパスは、書き換えより前に確定させる。
 - **ライブ録画の仕上げは、yt-dlp が残した途中ファイルの形で分岐する。** `<名前>.mp4.part` が1つなら改名、`<名前>.mp4` があれば何もしない（yt-dlp が完成させた）、`<名前>.f<ID>.<拡張子>`（設定で `.part` を使うときは末尾に `.part`）に分かれていれば結合（「配信開始から録画」ONで止めた場合。yt-dlp が映像と音声を並行して取るので、長さは揃わず、短いほうに合わせる）。「配信開始から録画」の設定値では分岐しない（分かれ方は yt-dlp が決めるため）。
 - **進捗の表示**

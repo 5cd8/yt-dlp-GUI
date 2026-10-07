@@ -1090,7 +1090,9 @@ namespace YtGui
                 args.Add("live_chat");
             }
 
-            args.AddRange(YtDlp.BuildOutputArgs(item.OutputFilePath, settings.OutputDirectory, settings.TempDirectory, item.IsLive));
+            // 項目ごとのサブフォルダに分けないと、同名の別動画・同じURLの別フォーマットが、一時フォルダに残った途中ファイルの続きとして取られる（docs/adr/0007参照）。
+            var itemTempDirectory = YtDlp.BuildItemTempDirectory(settings.TempDirectory, item.Url, item.SelectedFormat, item.AudioOnly, item.Codec, item.IsLive);
+            args.AddRange(YtDlp.BuildOutputArgs(item.OutputFilePath, settings.OutputDirectory, itemTempDirectory, item.IsLive));
             args.AddRange(YtDlp.BuildConcurrentFragmentsArgs(settings.ConcurrentFragments, item.IsLive));
             if (item.IsLive)
                 args.Add(item.LiveFromStart ? "--live-from-start" : "--no-live-from-start");
@@ -1133,7 +1135,12 @@ namespace YtGui
                         await Task.WhenAll(stdoutCompleted.Task, stderrCompleted.Task).ConfigureAwait(false);
                         linkedCts.Token.ThrowIfCancellationRequested();
                         lastExit = rc;
-                        if (rc == 0) return 0;
+                        if (rc == 0)
+                        {
+                            // 成功したら空になっているはずの項目ごとのサブフォルダを消す。失敗・中止は、再開用の途中ファイルのために残す（ADR 0006・0007）。消せなくても成否には関係しない。
+                            if (itemTempDirectory.Length > 0) YtDlp.TryDeleteEmptyDirectory(itemTempDirectory);
+                            return 0;
+                        }
                         UpdateStatus($"失敗: exit {rc} (試行 {attempt}/{retryCount})");
                         try
                         {
