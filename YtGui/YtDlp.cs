@@ -175,32 +175,10 @@ namespace YtGui
 
         public static string BuildYouTubeLiveChatPath(string videoOutputPath)
         {
-            // --skip-downloadでの検証では拡張子がそのまま末尾に残ったが、実際のフルダウンロード
-            // （マージ処理を伴う）ではリテラルな-o指定でも拡張子は正しく除去される。
-            // 実際の出力ディレクトリの実例（<title>.webm / <title>.mkv と<title>.live_chat.json）で確認済み。
+            // チャットだけを別のyt-dlpで取る（--skip-download ＋ -o "<名前>.%(ext)s"。LiveChatReplay.BuildDownloadArgs）と、
+            // 保存されるのは <名前>.live_chat.json。動画の拡張子は付かない（2026-10-16、yt-dlp 2026.08.19の実機で確認）。
             var (dir, baseName) = SplitVideoPath(videoOutputPath);
             return Path.Combine(dir, baseName + ".live_chat.json");
-        }
-
-        public static string? FindYouTubeLiveChatFileFallback(string expectedPath)
-        {
-            try
-            {
-                var dir = Path.GetDirectoryName(expectedPath);
-                if (string.IsNullOrWhiteSpace(dir) || !Directory.Exists(dir)) return null;
-                var fileName = Path.GetFileName(expectedPath);
-                const string suffix = ".live_chat.json";
-                var baseName = fileName.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)
-                    ? fileName[..^suffix.Length]
-                    : Path.GetFileNameWithoutExtension(fileName);
-                var candidates = Directory.GetFiles(dir, baseName + "*.live_chat.json");
-                if (candidates.Length == 0) return null;
-                return candidates.OrderByDescending(File.GetLastWriteTimeUtc).First();
-            }
-            catch
-            {
-                return null;
-            }
         }
 
         public static string SanitizeFileName(string name)
