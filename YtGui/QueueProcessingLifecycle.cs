@@ -1,6 +1,6 @@
 namespace YtGui
 {
-    internal enum QueueProcessingState { Idle, Running, Stopping }
+    internal enum QueueProcessingState { Idle, Running, Stopping, Updating }
 
     internal enum AutoStartDecision { Start, Reserve, Ignore }
 
@@ -10,9 +10,13 @@ namespace YtGui
             => state switch
             {
                 QueueProcessingState.Idle => AutoStartDecision.Start,
-                QueueProcessingState.Stopping when !isStartReserved => AutoStartDecision.Reserve,
+                QueueProcessingState.Stopping or QueueProcessingState.Updating when !isStartReserved => AutoStartDecision.Reserve,
                 _ => AutoStartDecision.Ignore,
             };
+
+        // 起動時のツール更新（Updating）が終わった時点で、予約された開始があり、始める項目があれば始める。
+        public static bool ShouldStartAfterUpdates(bool isStartReserved, bool hasQueuedItems)
+            => isStartReserved && hasQueuedItems;
 
         public static bool ShouldStartNextAfterFinished(QueueProcessingState stateAtFinish, bool isStartReserved, bool hasQueuedItems, bool hasFaulted)
             => !hasFaulted
