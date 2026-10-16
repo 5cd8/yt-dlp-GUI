@@ -3,7 +3,7 @@
 yt-dlpのGUIラッパー（WinForms、`net8.0-windows`）。URLをキューに積み、動画または音声を順にダウンロードする。オプションで、チャットリプレイの取得と、絵文字・エモートのキャッシュの事前投入も行う。再生や表示の機能は持たない（純粋なダウンローダー）。
 
 - 用語：[CONTEXT.md](CONTEXT.md)（キュー項目・ステータス・動画取得・チャット取得などの区別が厳密）
-- 設計判断：[docs/adr/](docs/adr/)。チャット取得の失敗とステータスの関係、Twitchの逐次実行、`--sub-langs live_chat` について書いてある。ライブ録画のチャットを録画の後にアーカイブから取る理由（0005）も。チャット取得まわりを変える前に読む。一時フォルダを使うときに出力先を `-P` で渡す理由（0006）も。一時フォルダを項目ごとのサブフォルダに分ける理由（0007）も。ライブ以外のチャット取得を、動画取得の後処理（マージ・移動）の間に始める理由（0008）も。
+- 設計判断：[docs/adr/](docs/adr/)。チャット取得の失敗とステータスの関係、Twitchの逐次実行、`--sub-langs live_chat` について書いてある。ライブ録画のチャットを録画の後にアーカイブから取る理由（0005）も。チャット取得まわりを変える前に読む。一時フォルダを使うときに出力先を `-P` で渡す理由（0006）も。一時フォルダを項目ごとのサブフォルダに分ける理由（0007）も。ライブ以外のチャット取得を、動画取得の後処理（マージ・移動）の間に始める理由（0008）も。外部ツールを起動時に自動更新する方針と、ffmpeg を release の static ビルドにする理由（0009）も。
 - 絵文字キャッシュの要件：[動画ダウンローダー_絵文字キャッシュ事前投入機能_要件定義書.md](動画ダウンローダー_絵文字キャッシュ事前投入機能_要件定義書.md)
 - 絵文字キャッシュの検証用ビューア：https://github.com/5cd8/emoji-cache-viewer（別リポジトリ。ローカルは `../emoji-cache-viewer`）。`emoji_cache.sqlite` を読み取り専用で開き、絵文字を画像の一覧で表示する。絵文字キャッシュ投入（キュー項目・フォルダ一括投入・チャンネル事前投入）で絵文字が入ったかを確かめるときに使う。このリポジトリの一部ではない。
 
@@ -34,7 +34,9 @@ dotnet publish YtGui/YtGui.csproj -c Release -o publish/<フォルダ名>
 | `YtGui/ExecutionLog.cs` | 実行ログ（画面下部のログ欄）への追記と、古い行の切り詰め。yt-dlp の出力のうち、ffmpeg の雑音の行の判定。ログ欄のテキストは `ExecutionLogWriter` だけが書き換える |
 | `YtGui/LiveChatReplay.cs` | ライブ録画のチャットリプレイを録画の後に取るときの、UIに依存しない判定と組み立て（対象かどうか、「チャット未取得」の表示、右クリックでキューに入れてよいか、yt-dlp の引数。引数はライブ以外のチャット取得も使う） |
 | `YtGui/EmojiCacheOutputPath.cs` | 絵文字キャッシュの出力先の判定（未設定・存在しない・存在する）と、「出力先が存在しません: <パス>」のメッセージ。UIに依存しない |
-| `YtGui/QueueProcessingLifecycle.cs` | キュー処理の状態（動いていない・動いている・停止中）と、自動開始を予約するか、キュー処理の終わりに次を始めるかの、UIに依存しない判定 |
+| `YtGui/QueueProcessingLifecycle.cs` | キュー処理の状態（動いていない・動いている・停止中・ツール更新中）と、自動開始を予約するか、キュー処理の終わりに次を始めるかの、UIに依存しない判定 |
+| `YtGui/ToolUpdater.cs` | 起動時のツール更新の流れ（ffmpeg → deno → TwitchDownloaderCLI。`yt-dlp -U` は `MainForm` が先に行う）。失敗は実行ログへの警告にとどめる |
+| `YtGui/ToolInstaller.cs`・`ToolReleaseSources.cs`・`ToolVersions.cs` | ツール更新の部品。ダウンロード・ハッシュ検証・zip展開・巻き戻し付きの入れ替え・外部プロセスの実行（`ToolInstaller`）、GitHub API のJSONから更新するアセットを選ぶ処理（`ToolReleaseSources`）、`--version` の出力の解釈と更新要否の判定（`ToolVersions`）。UIと `Settings` に依存しない |
 | `YtGui/FormatSelectionForm.cs`・`MediaFormat.cs` | フォーマット一覧の解析と選択画面 |
 | `YtGui/DataDirectory.cs` | データフォルダ（設定・エラーログ・処理済みアーカイブの記録を置く）の決定と、`%APPDATA%\YtGui\` からの移行 |
 | `YtGui/Settings.cs`・`SettingsForm.cs` | 設定は `<実行ファイルのフォルダ>\data\settings.json`（書き込めないときだけ `%APPDATA%\YtGui\`）。yt-dlp・ffmpeg・Twitchチャットツールのパス、出力先、絵文字キャッシュの出力先、チャンネルURL・件数N、一時フォルダ・並列数など |
@@ -43,12 +45,16 @@ dotnet publish YtGui/YtGui.csproj -c Release -o publish/<フォルダ名>
 
 - **ステータスを決めるのは、動画取得の成否だけ。** チャット取得や絵文字キャッシュの失敗は、ログへの警告にとどめる（ADR 0001）。
 - **ライブ以外のYouTube・Twitchのチャット取得は、動画取得の yt-dlp が後処理の行（`[Merger]`・`[Metadata]`・`[MoveFiles]` など。`PostProcessingChatFetch`）を最初に出した時点で、別プロセスとして並行して始める。** 検知できなければ、動画取得の後に始める（ADR 0008）。ライブ（Twitch含む）は動画取得の後に逐次で行う（ADR 0002）。キュー処理は「1項目＝動画取得の1プロセスを待つ」前提のままで、並行して動くのはチャット取得の1プロセスだけ。動画取得の失敗・キャンセルでは、並行して動いているチャット取得も止める（`ProcessQueueAsync` の `finally`）。
-- **キュー処理（`ProcessQueueAsync`）は同時に1つだけ動かす。** 始めるのは `StartQueueProcessingLoop` だけで、停止中（`QueueProcessingState.Stopping`）の間は始めない（停止中に予約された開始は、停止が完了した時点で `OnQueueProcessingFinished` が始める）。キュー処理の終わりは `OnQueueProcessingFinished` が UIスレッドで受け取り、次を始めるか（停止中に予約された開始、終わる直前に入った項目）を決める。キュー処理を自動で始める操作は、`StartProcessing` ではなく `StartOrReserveProcessing` を呼ぶ。
+- **キュー処理（`ProcessQueueAsync`）は同時に1つだけ動かす。** 始めるのは `StartQueueProcessingLoop` だけで、停止中（`QueueProcessingState.Stopping`）とツール更新中（`QueueProcessingState.Updating`）の間は始めない（その間に予約された開始は、停止の完了時・更新の完了時に `OnQueueProcessingFinished` が始める）。キュー処理の終わりは `OnQueueProcessingFinished` が UIスレッドで受け取り、次を始めるか（停止中に予約された開始、終わる直前に入った項目）を決める。キュー処理を自動で始める操作は、`StartProcessing` ではなく `StartOrReserveProcessing` を呼ぶ。
 - **YouTubeのチャットは、動画取得の yt-dlp には付けず、チャットだけを別の yt-dlp（`--skip-download --write-subs --sub-langs live_chat`、`LiveChatReplay.BuildDownloadArgs`）で取る**（`--write-live-chat` はyt-dlpから削除された。ADR 0003）。動画取得に `live_chat` を付けると、字幕が動画より先に取られて動画のダウンロードの開始が遅れる（ADR 0008）。yt-dlpの仕様は変わるので、この連携を変えたら、実際に取って確かめる。
 - **YouTubeのライブ録画では、録画と同じyt-dlpでチャットを取らない**（ADR 0005）。録画の後に、別のyt-dlp（`--skip-download`）でアーカイブのチャットリプレイを取る。取れたかどうかは、終了コードではなくファイルの有無で決める（チャットリプレイがまだ無いと、終了コード0でファイルを作らないため）。
 - **フォルダ一括投入とチャンネル事前投入は、キューの「停止」・「選択を中止」では止まらない。** 専用のトークン（`emojiCacheCts`）を持ち、止めるのは「絵文字キャッシュ ▼」ボタンの「中止」とアプリの終了だけ。このトークンは、フォルダ一括投入とチャンネル事前投入が同時に1つだけ動くことの印も兼ねる（キュー項目の絵文字キャッシュ投入とは無関係に並行して動く）。
 - **チャンネル事前投入の「N件」は、YouTubeでは `was_live` の枠だけを新しい順に数え、処理済みで飛ばした枠も数に入れる。** 一覧は `--playlist-end (N + ListingMargin)` で絞り、yt-dlp を自然終了させる（`Kill` で止めると `%TEMP%\_MEI*` が毎回残る）。`--playlist-end N` だけにしない（先頭の配信中・配信予定の枠が数に入るため）。
 - **チャンネル事前投入は、アーカイブごとに取得と投入が両方終わってから処理済みに記録する**（データフォルダの `prefetched_archives.txt`）。取得できたかはファイルの有無で決める（ADR 0005）。絵文字の失敗件数に関わらず記録する（`PopulateAsync` は新規分だけを取るので、失敗で未処理に戻すと毎回チャット全体を取り直すため）。例外が出たときだけ記録しない。
+- **ツール更新は起動時に1回、常に自動で行う**（設定は無い。ADR 0009）。順序は `yt-dlp -U` → ffmpeg → deno → TwitchDownloaderCLI で、`MainForm.RunToolUpdatesAsync` が `QueueProcessingState.Updating` にして行い、終わったら `OnToolUpdatesFinished` が予約を処理する。失敗はステータスに触れず、実行ログへの警告にとどめる。アプリの終了では ffmpeg・deno・TwitchDownloaderCLI の更新を止める（`yt-dlp -U` は止めない）。
+  - ffmpeg は BtbN/FFmpeg-Builds の release ブランチ追従の static ビルド（gpl）を前提にする。`n<X>.<Y>[.<Z>]` が読めない版（master・Gyan など）は「更新が必要」として置き換える。更新するのは版番号 `X.Y.Z` が上がったときだけ。ハッシュは GitHub API の `digest` で検証し、無ければ更新しない。
+  - `TwitchDownloaderCLI --version` は、版を標準エラーにだけ出し、終了コード1を返す。判定は出力で行い、終了コードを見ない。
+  - 入れ替えの作業フォルダ `.ytgui-update\<ツール名>` は、データフォルダではなく、入れ替え先のツールのフォルダに作る（同じドライブでの名前の変更のため）。下の「3ファイルの置き場」の対象外。
 - **アプリが書き出す3ファイル（`settings.json`・`last_error.log`・`prefetched_archives.txt`）の置き場は、`Settings.GetDataDirectory()` だけが決める。** 通常は `<実行ファイルのフォルダ>\data`。そこに書き込めないとき（実際に一時ファイルを作って確かめる）だけ `%APPDATA%\YtGui\`。判定は実行中に1回。移行は、起動のたびに旧フォルダから `data` に無いファイルだけをコピーする（元は消さない。`data` 側を消すと旧フォルダの内容が戻るので、リセットするには両方を消す）。新しいファイルを書き出す機能を足すときは、パスを自前で組み立てず、このフォルダを使う。
 - **動画取得の出力先は、一時フォルダを設定したときだけ `-P home:`・`-P temp:` ＋ファイル名だけの `-o` で渡す**（絶対パスの `-o` だと `-P` が無視される。ADR 0006）。`-P temp:` は `<一時フォルダ>\<ハッシュ12桁>`（正規化したURL・`SelectedFormat`・`AudioOnly`・`Codec` から計算。`YtDlp.BuildItemTempDirectory`）。同名の別動画や同じURLの別フォーマットが、一時フォルダに残った途中ファイルの続きとして取られるのを防ぐ。同じURL・同じフォーマットの再実行は同じサブフォルダになり、再開できる（ADR 0007）。ライブ録画には一時フォルダを渡さない（仕上げが出力先の途中ファイルを探すため）。`-N`（並列数）も渡さない（Issue #34の確定事項）。失敗・中止で一時フォルダに残った途中のファイル（`.part` 等）は消さない（再実行・リトライの再開に使うため）。成功（exit 0）後にだけ、空になったサブフォルダを消す（再帰なし、失敗は無視）。
 - **後の処理が出力ファイル名を書き換えることがある**（ライブの後処理での衝突回避など）。そこから導くパスは、書き換えより前に確定させる。ライブは、仕上げがファイル名を書き換えるので、チャットのファイル名を仕上げの前には確定できない。そのためライブのチャット取得は、後処理の間には始めず、仕上げの後にパスを導く（この不変条件の例外）。

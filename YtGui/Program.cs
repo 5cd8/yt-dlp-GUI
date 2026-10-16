@@ -83,6 +83,9 @@ namespace YtGui
         bool logFlushScheduled;
         readonly ExecutionLogWriter executionLogWriter;
         CancellationTokenSource? cts;
+        CancellationTokenSource? updateCts;
+        Task? updateTask;
+        static readonly HttpClient updateHttpClient = CreateUpdateHttpClient();
         QueueProcessingState queueProcessingState = QueueProcessingState.Idle;
         bool isStartReserved;
         Settings settings = Settings.Load();
@@ -204,7 +207,7 @@ namespace YtGui
             };
             menu.Items.Add("保存先を開く", null, (_, _) => OpenSelectedOutput());
             lvQueue.ContextMenuStrip = menu;
-            Shown += async (_, _) => await CheckYtDlpUpdateAsync();
+            Shown += async (_, _) => await RunToolUpdatesAsync();
         }
 
         void AttachDeselectHandlers(Control parent)
@@ -287,6 +290,10 @@ namespace YtGui
             progressUiTimer.Stop();
             cts?.Cancel();
             emojiCacheCts?.Cancel();
+            // ツールの更新を中止して、更新用フォルダの片付けとプロセスの終了を3秒まで待つ（yt-dlp -U は止めない。docs/adr/0009参照）。
+            var updateTaskToWait = updateTask;
+            try { updateCts?.Cancel(); } catch (ObjectDisposedException) { }
+            try { updateTaskToWait?.Wait(TimeSpan.FromSeconds(3)); } catch { }
             lock (queueLock)
             {
                 foreach (var item in allItems)
@@ -406,6 +413,23 @@ namespace YtGui
         {
             if (queueProcessingState == QueueProcessingState.Idle) StartProcessing();
             else if (queueProcessingState == QueueProcessingState.Running) StopProcessing();
+            else if (queueProcessingState == QueueProcessingState.Updating) ReserveStartAfterUpdates();
+        }
+
+        void ReserveStartAfterUpdates()
+        {
+            lock (queueLock)
+            {
+                if (queue.Count == 0)
+                {
+                    MessageBox.Show("キューが空です。URLを追加してください。", "情報", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+            }
+            isStartReserved = true;
+            btnStart.Text = "更新後に開始";
+            btnStart.Enabled = false;
+            UpdateStatus("ツールの更新が終わったら、キュー処理を開始します。");
         }
 
         void StartProcessing()
@@ -482,6 +506,63 @@ namespace YtGui
             btnStart.Enabled = true;
         }
 
+        // 起動時に、yt-dlp → ffmpeg → deno → TwitchDownloaderCLI の順に更新する。更新の間は Updating で、開始は予約になる（docs/adr/0009参照）。
+        async Task RunToolUpdatesAsync()
+        {
+            queueProcessingState = QueueProcessingState.Updating;
+            btnStart.Text = "更新中…";
+            btnStart.Enabled = true;
+            using var localCts = new CancellationTokenSource();
+            try
+            {
+                updateCts = localCts;
+                await CheckYtDlpUpdateAsync();
+                // yt-dlp -U の最中に終了の操作があったら、ToolUpdater を始めない。
+                localCts.Token.ThrowIfCancellationRequested();
+                // UI スレッドで最初の await までの同期処理（前回の更新用フォルダの削除、プロセスの起動）が走らないよう、Task.Run で別のスレッドに出す。
+                // FormClosing が待てるよう、タスクを持っておく。
+                var updater = new ToolUpdater(settings, UpdateStatus, updateHttpClient);
+                var task = Task.Run(() => updater.RunAsync(localCts.Token));
+                updateTask = task;
+                await task;
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex) { UpdateStatus("ツールの更新でエラー: " + ex.Message); }
+            finally
+            {
+                var closing = localCts.IsCancellationRequested;
+                updateCts = null;
+                updateTask = null;
+                OnToolUpdatesFinished(closing);
+            }
+        }
+
+        // closing が true（アプリの終了で更新を中止した）ときは、何もしない。
+        void OnToolUpdatesFinished(bool closing)
+        {
+            if (closing) return;   // フォームが閉じかけている（破棄済みの可能性がある）ので、ボタンにもキュー処理にも触れない
+            var wasStartReserved = isStartReserved;
+            isStartReserved = false;
+            bool hasQueuedItems;
+            lock (queueLock) hasQueuedItems = queue.Count > 0;
+            if (QueueProcessingLifecycle.ShouldStartAfterUpdates(wasStartReserved, hasQueuedItems))
+            {
+                StartQueueProcessingLoop();
+                return;
+            }
+            queueProcessingState = QueueProcessingState.Idle;
+            btnStart.Text = "開始";
+            btnStart.Enabled = true;
+        }
+
+        static HttpClient CreateUpdateHttpClient()
+        {
+            // ダウンロードの時間切れは ToolInstaller が CancellationToken で制御する。GitHub API は User-Agent が必須。
+            var client = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("yt-gpt");
+            return client;
+        }
+
         void StartOrReserveProcessing()
         {
             switch (QueueProcessingLifecycle.DecideAutoStart(queueProcessingState, isStartReserved))
@@ -491,7 +572,16 @@ namespace YtGui
                     break;
                 case AutoStartDecision.Reserve:
                     isStartReserved = true;
-                    UpdateStatus("停止の処理が終わったら、キュー処理を開始します。");
+                    if (queueProcessingState == QueueProcessingState.Updating)
+                    {
+                        btnStart.Text = "更新後に開始";
+                        btnStart.Enabled = false;
+                        UpdateStatus("ツールの更新が終わったら、キュー処理を開始します。");
+                    }
+                    else
+                    {
+                        UpdateStatus("停止の処理が終わったら、キュー処理を開始します。");
+                    }
                     break;
             }
         }
