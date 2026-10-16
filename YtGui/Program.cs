@@ -33,6 +33,9 @@ namespace YtGui
         public bool ShouldFetchChatReplayOnly { get; set; }
         public CancellationTokenSource? ActiveCts { get; set; }
         public int ActiveProcPid { get; set; }
+        // チャット取得のプロセス用。動画取得と同時に動くことがあるので、ActiveCts・ActiveProcPid とは分ける（共有すると、先に終わったほうの finally が相手のスロットを消してしまう）。
+        public CancellationTokenSource? ActiveChatCts { get; set; }
+        public int ActiveChatProcPid { get; set; }
     }
 
     public class MainForm : Form
@@ -288,8 +291,7 @@ namespace YtGui
             {
                 foreach (var item in allItems)
                 {
-                    try { item.ActiveCts?.Cancel(); } catch { }
-                    try { KillProcessTree(item.ActiveProcPid); } catch { }
+                    CancelItemWork(item);
                 }
             }
         }
@@ -301,12 +303,20 @@ namespace YtGui
             if (ofd.ShowDialog() == DialogResult.OK) tbCookie.Text = ofd.FileName;
         }
 
+        // 動画取得（ActiveCts・ActiveProcPid）と、並行して動くチャット取得（ActiveChatCts・ActiveChatProcPid）の両方を止める。
+        void CancelItemWork(QueueItem item)
+        {
+            try { item.ActiveCts?.Cancel(); } catch { }
+            try { KillProcessTree(item.ActiveProcPid); } catch { }
+            try { item.ActiveChatCts?.Cancel(); } catch { }
+            try { KillProcessTree(item.ActiveChatProcPid); } catch { }
+        }
+
         void CancelItems(IEnumerable<QueueItem> items)
         {
             foreach (var item in items)
             {
-                try { item.ActiveCts?.Cancel(); } catch { }
-                try { KillProcessTree(item.ActiveProcPid); } catch { }
+                CancelItemWork(item);
             }
         }
 
@@ -446,8 +456,7 @@ namespace YtGui
             {
                 foreach (var item in allItems)
                 {
-                    try { item.ActiveCts?.Cancel(); } catch { }
-                    try { KillProcessTree(item.ActiveProcPid); } catch { }
+                    CancelItemWork(item);
                 }
             }
             queueProcessingState = QueueProcessingState.Stopping;
@@ -709,31 +718,13 @@ namespace YtGui
         {
             if (!TryGetDownloadProgress(line, out var percent))
             {
-                // ライブチャットのフラグメント取得行（[youtube_live_chat] ...）には%表示がなく進捗が計算できないため、
-                // 既存の「チャット取得中」マーキー表示に切り替えてフリーズして見えるのを防ぐ。
-                if (line.Contains("[youtube_live_chat]"))
-                {
-                    bool changed;
-                    lock (queueLock)
-                    {
-                        changed = allItems.Contains(item) && item.Status != "チャット取得中";
-                        if (changed) item.Status = "チャット取得中";
-                    }
-                    if (changed) RefreshQueueDisplay();
-                }
                 if (!ExecutionLogFilter.IsFfmpegNoiseLine(line)) UpdateStatus(line);
                 return;
             }
-            // チャット取得フェーズの後に動画/音声のダウンロードが再開するケース（%表示が戻ってくる）では
-            // マーキー表示に固定されたままにならないよう、通常の進捗表示に戻す。
-            bool reverted;
             lock (queueLock)
             {
                 item.ProgressPercent = Math.Clamp(percent, 0, 100);
-                reverted = allItems.Contains(item) && item.Status == "チャット取得中";
-                if (reverted) item.Status = "ダウンロード中";
             }
-            if (reverted) RefreshQueueDisplay();
         }
         async Task CheckYtDlpUpdateAsync()
         {
@@ -915,7 +906,7 @@ namespace YtGui
                     UpdateStatus($"途中のファイルが想定外の数（{splitPartPaths.Count}個）だったので、映像と音声を結合しませんでした。途中のファイルを残しています: " + string.Join("、", splitPartPaths.Select(Path.GetFileName)));
                     return;
                 }
-                // 項目の中止（CancelItems）が止めるのは item.ActiveCts と ActiveProcPid だけ。ここで入れないと、仕上げ中の ffmpeg は止まらない。
+                // 項目の中止（CancelItemWork）が止めるのは、item.ActiveCts・ActiveProcPid と、チャット取得用の ActiveChatCts・ActiveChatProcPid だけ。ここで入れないと、仕上げ中の ffmpeg は止まらない。
                 item.ActiveCts = linkedCts;
                 lock (queueLock)
                 {
@@ -988,14 +979,28 @@ namespace YtGui
                 }
                 RefreshQueueDisplay();
                 UpdateStatus($"処理中: {item.Url}");
+                // ライブ以外の YouTube・Twitch は、動画のダウンロードが終わって yt-dlp が後処理（マージ・移動）に入った時点で、チャット取得を並行して始める（docs/adr/0008参照）。
+                var chatSiteKind = YtDlp.DetermineSiteKind(item.Url);
+                using var earlyChatCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+                Task<ChatFetchResult>? earlyChat = null;
+                var earlyChatGate = new object();
+                Action? onPostProcessingStarted = PostProcessingChatFetch.ShouldFetchChatDuringPostProcessing(item.IsLive, item.DownloadChatReplay, chatSiteKind)
+                    ? () =>
+                    {
+                        lock (earlyChatGate)
+                        {
+                            // 後処理の行は何度も出る。リトライでも出る。1項目につき1回だけ始める。
+                            if (earlyChat != null) return;
+                            // 標準出力の読み取りを止めないよう、別のスレッドで始める。
+                            earlyChat = Task.Run(() => FetchChatReplayWithoutStatusAsync(item, chatSiteKind, earlyChatCts.Token));
+                        }
+                    }
+                    : null;
                 try
                 {
-                    var rc = await RunYtDlpAsync(item, token);
+                    var rc = await RunYtDlpAsync(item, token, onPostProcessingStarted);
                     if (rc != 0) throw new InvalidOperationException($"yt-dlp が終了コード {rc} を返しました。");
                     UpdateStatus($"完了: {item.Url} (exit {rc})");
-                    string? youTubeChatPath = null;
-                    if (item.DownloadChatReplay && !item.IsLive && YtDlp.DetermineSiteKind(item.Url) == SiteKind.YouTube)
-                        youTubeChatPath = YtDlp.BuildYouTubeLiveChatPath(item.OutputFilePath);
                     await FinalizeLiveOutputFileAsync(item, token);
                     lock (queueLock)
                     {
@@ -1003,7 +1008,9 @@ namespace YtGui
                         item.ProgressPercent = 100;
                     }
                     RefreshQueueDisplay();
-                    await ProcessChatReplayIfRequestedAsync(item, youTubeChatPath, token);
+                    Task<ChatFetchResult>? startedChat;
+                    lock (earlyChatGate) startedChat = earlyChat;
+                    await ProcessChatReplayIfRequestedAsync(item, startedChat, token);
                 }
                 catch (OperationCanceledException)
                 {
@@ -1049,10 +1056,21 @@ namespace YtGui
                     }
                     RefreshQueueDisplay();
                 }
+                finally
+                {
+                    // 動画取得が失敗・キャンセルしたとき、並行して動いているチャット取得を止めて、終わるのを待つ（CTS を破棄する前に、プロセスを残さない）。
+                    Task<ChatFetchResult>? pendingChat;
+                    lock (earlyChatGate) pendingChat = earlyChat;
+                    if (pendingChat != null && !pendingChat.IsCompleted)
+                    {
+                        earlyChatCts.Cancel();
+                        try { await pendingChat; } catch { }
+                    }
+                }
             }
         }
 
-        async Task<int> RunYtDlpAsync(QueueItem item, CancellationToken token)
+        async Task<int> RunYtDlpAsync(QueueItem item, CancellationToken token, Action? onPostProcessingStarted = null)
         {
             // ライブ配信の録画中は総サイズが分からず、進捗の行に % が付かない。進捗の表示には使えず、実行ログに流れるだけになるので、
             // 録画が続いていると分かる程度に間引く。
@@ -1081,14 +1099,8 @@ namespace YtGui
             args.Add("--embed-thumbnail");
             args.Add("--add-metadata");
             if (settings.UseNoPart) args.Add("--no-part");
-            if (item.DownloadChatReplay && !item.IsLive && YtDlp.DetermineSiteKind(item.Url) == SiteKind.YouTube)
-            {
-                // yt-dlpが--write-live-chatを廃止し、ライブチャットを疑似言語"live_chat"の字幕として扱う方式に統一したため（docs/adr/0003参照）
-                // ライブでは付けない。配信中のチャットは配信が終わるまで取り続けて録画が始まらず、vlc-chat も読めない形式のため、録画の後にアーカイブから取る（docs/adr/0005参照）
-                args.Add("--write-subs");
-                args.Add("--sub-langs");
-                args.Add("live_chat");
-            }
+            // チャットは動画取得の yt-dlp では取らず、後処理の間に別プロセスで取る（docs/adr/0008参照）。
+            // 動画取得に --write-subs --sub-langs live_chat を付けると、字幕が動画より先に取られ、動画のダウンロードの開始が遅れる。
 
             // 項目ごとのサブフォルダに分けないと、同名の別動画・同じURLの別フォーマットが、一時フォルダに残った途中ファイルの続きとして取られる（docs/adr/0007参照）。
             var itemTempDirectory = YtDlp.BuildItemTempDirectory(settings.TempDirectory, item.Url, item.SelectedFormat, item.AudioOnly, item.Codec, item.IsLive);
@@ -1110,8 +1122,9 @@ namespace YtGui
                 var stderrBuffer = new StringBuilder();
                 proc.OutputDataReceived += (_, e) =>
                 {
-                    if (e.Data == null) stdoutCompleted.TrySetResult();
-                    else ReportDownloadProgress(item, e.Data);
+                    if (e.Data == null) { stdoutCompleted.TrySetResult(); return; }
+                    ReportDownloadProgress(item, e.Data);
+                    if (onPostProcessingStarted != null && PostProcessingChatFetch.IsPostProcessingLine(e.Data)) onPostProcessingStarted();
                 };
                 proc.ErrorDataReceived += (_, e) =>
                 {
@@ -1171,50 +1184,81 @@ namespace YtGui
             return lastExit;
         }
 
-        async Task ProcessChatReplayIfRequestedAsync(QueueItem item, string? youTubeChatPath, CancellationToken token)
+        async Task ProcessChatReplayIfRequestedAsync(QueueItem item, Task<ChatFetchResult>? earlyChat, CancellationToken token)
         {
             if (!item.DownloadChatReplay) return;
 
             var siteKind = YtDlp.DetermineSiteKind(item.Url);
-            if (siteKind == SiteKind.YouTube)
+            if (siteKind == SiteKind.YouTube && item.IsLive)
             {
-                if (item.IsLive)
-                {
-                    await FetchYouTubeLiveChatReplayAsync(item, token);
-                    return;
-                }
-                // RunYtDlpAsync内の --write-subs --sub-langs live_chat で完結済み。
-                // 絵文字キャッシュ設定の有無に関わらず、まずファイル名を想定の名前に揃える。
-                if (youTubeChatPath != null)
-                {
-                    var alignedPath = AlignYouTubeLiveChatFileName(youTubeChatPath);
-                    if (alignedPath != null)
-                        await ProcessEmojiCacheIfRequestedAsync(item, alignedPath, siteKind, token);
-                }
+                await FetchYouTubeLiveChatReplayAsync(item, token);
                 return;
             }
-
-            if (siteKind != SiteKind.Twitch)
+            if (siteKind is not (SiteKind.YouTube or SiteKind.Twitch))
             {
                 UpdateStatus("チャット取得をスキップしました（非対応のサイト種別）: " + item.Url);
                 return;
             }
 
-            lock (queueLock)
+            if (earlyChat == null)
             {
-                if (!allItems.Contains(item)) return;
-                item.Status = "チャット取得中";
+                // 後処理の行を検知できなかった（またはライブのTwitch）。従来どおり、動画取得の後に始める。
+                // 動画取得の後に削除された項目では始めない（CancelItemWork は、まだ動いていないチャット取得を止められない）。
+                lock (queueLock)
+                {
+                    if (!allItems.Contains(item)) return;
+                }
             }
-            RefreshQueueDisplay();
-            var chatPath = YtDlp.BuildChatReplayOutputPath(item.OutputFilePath); // 1回だけ計算、以後再計算しない
-            var chatSucceeded = false;
+            var chatTask = earlyChat ?? FetchChatReplayWithoutStatusAsync(item, siteKind, token);
+            if (!chatTask.IsCompleted)
+            {
+                lock (queueLock)
+                {
+                    if (allItems.Contains(item)) item.Status = "チャット取得中";
+                }
+                RefreshQueueDisplay();
+            }
+            ChatFetchResult result;
+            try { result = await chatTask; }
+            finally
+            {
+                lock (queueLock)
+                {
+                    if (allItems.Contains(item) && item.Status == "チャット取得中") item.Status = "ダウンロード完了";
+                }
+                RefreshQueueDisplay();
+            }
+
+            if (result.Succeeded)
+                await ProcessEmojiCacheIfRequestedAsync(item, result.ChatPath, siteKind, token);
+        }
+
+        readonly record struct ChatFetchResult(bool Succeeded, string ChatPath);
+
+        // 動画取得と並行して動かすことがあるので、item.Status は書き換えない。例外は外へ出さず、実行ログへの警告にとどめる（ADR 0001）。
+        async Task<ChatFetchResult> FetchChatReplayWithoutStatusAsync(QueueItem item, SiteKind siteKind, CancellationToken token)
+        {
+            var chatPath = string.Empty;
+            var succeeded = false;
             try
             {
-                var (exit, stderr) = await RunTwitchChatDownloadAsync(item, chatPath, token);
-                chatSucceeded = exit == 0;
-                UpdateStatus(chatSucceeded
-                    ? "チャットリプレイを取得しました: " + chatPath
-                    : $"チャット取得に失敗しました (exit {exit}): {stderr.Trim()}");
+                chatPath = siteKind == SiteKind.Twitch
+                    ? YtDlp.BuildChatReplayOutputPath(item.OutputFilePath) // 1回だけ計算、以後再計算しない
+                    : YtDlp.BuildYouTubeLiveChatPath(item.OutputFilePath);
+                // 並行して動かすので、いつ始まったかが実行ログから分かるようにする。
+                UpdateStatus("チャット取得を始めます: " + item.Title);
+                if (siteKind == SiteKind.Twitch)
+                {
+                    var (exit, stderr) = await RunTwitchChatDownloadAsync(item, chatPath, token);
+                    succeeded = exit == 0;
+                    UpdateStatus(succeeded
+                        ? "チャットリプレイを取得しました: " + chatPath
+                        : $"チャット取得に失敗しました (exit {exit}): {stderr.Trim()}");
+                }
+                else
+                {
+                    succeeded = await FetchYouTubeChatReplayFileAsync(item, chatPath, token);
+                }
             }
             catch (OperationCanceledException)
             {
@@ -1224,17 +1268,21 @@ namespace YtGui
             {
                 UpdateStatus("チャット取得でエラー: " + ex.Message);
             }
-            finally
-            {
-                lock (queueLock)
-                {
-                    if (allItems.Contains(item)) item.Status = "ダウンロード完了";
-                }
-                RefreshQueueDisplay();
-            }
+            return new ChatFetchResult(succeeded, chatPath);
+        }
 
-            if (chatSucceeded)
-                await ProcessEmojiCacheIfRequestedAsync(item, chatPath, siteKind, token);
+        // 取れたかどうかはファイルの有無で決める。チャットリプレイがまだ無いと、yt-dlp は終了コード0でファイルを作らない（ADR 0005）。
+        async Task<bool> FetchYouTubeChatReplayFileAsync(QueueItem item, string chatPath, CancellationToken token)
+        {
+            var (exit, output) = await RunYouTubeChatReplayDownloadAsync(item, chatPath, token);
+            var isFetched = File.Exists(chatPath);
+            if (isFetched)
+                UpdateStatus("チャットリプレイを取得しました: " + chatPath);
+            else if (item.IsLive)
+                UpdateStatus($"チャットリプレイを取得できませんでした（配信中か、配信の直後でまだ用意されていない可能性があります。配信の処理が終わった後に、右クリックの「チャットリプレイを取得」で取り直せます） (exit {exit}): {item.Title} {output.Trim()}");
+            else
+                UpdateStatus($"チャットリプレイを取得できませんでした（チャットが無い動画か、まだ用意されていません） (exit {exit}): {item.Title} {output.Trim()}");
+            return isFetched;
         }
 
         async Task FetchYouTubeLiveChatReplayAsync(QueueItem item, CancellationToken token)
@@ -1251,13 +1299,7 @@ namespace YtGui
             var isFetched = false;
             try
             {
-                var (exit, output) = await RunYouTubeChatReplayDownloadAsync(item, chatPath, token);
-                // チャットリプレイがまだ無いと、yt-dlp は終了コード0でファイルを作らない。
-                isFetched = File.Exists(chatPath);
-                if (isFetched)
-                    UpdateStatus("チャットリプレイを取得しました: " + chatPath);
-                else
-                    UpdateStatus($"チャットリプレイを取得できませんでした（配信中か、配信の直後でまだ用意されていない可能性があります。配信の処理が終わった後に、右クリックの「チャットリプレイを取得」で取り直せます） (exit {exit}): {item.Title} {output.Trim()}");
+                isFetched = await FetchYouTubeChatReplayFileAsync(item, chatPath, token);
             }
             catch (OperationCanceledException)
             {
@@ -1303,12 +1345,14 @@ namespace YtGui
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(token);
             try
             {
-                item.ActiveCts = linkedCts;
+                item.ActiveChatCts = linkedCts;
                 using var reg = linkedCts.Token.Register(() => { try { if (!proc.HasExited) proc.Kill(true); } catch { } });
                 // 中止済みのまま起動すると、WaitForExitAsync がすぐ戻り、起動した yt-dlp を止められずに残してしまう。
                 linkedCts.Token.ThrowIfCancellationRequested();
                 proc.Start();
-                try { item.ActiveProcPid = proc.Id; } catch { item.ActiveProcPid = 0; }
+                try { item.ActiveChatProcPid = proc.Id; } catch { item.ActiveChatProcPid = 0; }
+                // 起動と中止が重なると、Register のコールバックが起動前に走ってプロセスを止められない。
+                if (linkedCts.Token.IsCancellationRequested) { try { proc.Kill(true); } catch { } }
                 proc.BeginOutputReadLine();
                 proc.BeginErrorReadLine();
                 // WaitForExitAsync は、非同期で読んでいる標準出力・標準エラーの読み切りまで待つ。
@@ -1317,34 +1361,8 @@ namespace YtGui
             }
             finally
             {
-                item.ActiveCts = null;
-                item.ActiveProcPid = 0;
-            }
-        }
-
-        // yt-dlpが実際に書き出したlive_chat.jsonを探し、想定ファイル名（BuildYouTubeLiveChatPath）に
-        // リネームして揃える。見つからない場合はnullを返す。
-        string? AlignYouTubeLiveChatFileName(string expectedPath)
-        {
-            if (File.Exists(expectedPath)) return expectedPath;
-
-            var fallback = YtDlp.FindYouTubeLiveChatFileFallback(expectedPath);
-            if (fallback == null)
-            {
-                UpdateStatus("チャットリプレイJSONが見つかりませんでした: " + expectedPath);
-                return null;
-            }
-
-            try
-            {
-                File.Move(fallback, expectedPath);
-                UpdateStatus("チャットリプレイJSONのファイル名を揃えました: " + Path.GetFileName(expectedPath));
-                return expectedPath;
-            }
-            catch (Exception ex)
-            {
-                UpdateStatus("チャットJSONのリネームに失敗したため、元のファイル名のまま使用します: " + fallback + " (" + ex.Message + ")");
-                return fallback;
+                item.ActiveChatCts = null;
+                item.ActiveChatProcPid = 0;
             }
         }
 
@@ -1379,7 +1397,7 @@ namespace YtGui
             RefreshQueueDisplay();
             try
             {
-                // 項目の中止（CancelItems）が止めるのは item.ActiveCts と ActiveProcPid だけ。プロセスを持たないこの処理は、キュー全体の token をそのまま渡しても止まらない。
+                // 項目の中止（CancelItemWork）が止めるのは、item.ActiveCts・ActiveProcPid と、チャット取得用の ActiveChatCts・ActiveChatProcPid だけ。プロセスを持たないこの処理は、キュー全体の token をそのまま渡しても止まらない。
                 item.ActiveCts = linkedCts;
                 var (downloaded, failed) = await EmojiCache.PopulateAsync(resolvedPath, siteKind, cacheDirectory, UpdateStatus, linkedCts.Token);
                 UpdateStatus($"絵文字キャッシュ投入が完了しました（取得: {downloaded}件, 失敗: {failed}件）");
@@ -1416,18 +1434,22 @@ namespace YtGui
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(token);
             try
             {
-                item.ActiveCts = linkedCts;
+                item.ActiveChatCts = linkedCts;
                 using var reg = linkedCts.Token.Register(() => { try { if (!proc.HasExited) proc.Kill(true); } catch { } });
+                // 中止済みのまま起動すると、起動した TwitchDownloaderCLI を止められずに残してしまう。
+                linkedCts.Token.ThrowIfCancellationRequested();
                 proc.Start();
-                try { item.ActiveProcPid = proc.Id; } catch { item.ActiveProcPid = 0; }
+                try { item.ActiveChatProcPid = proc.Id; } catch { item.ActiveChatProcPid = 0; }
+                // 起動と中止が重なると、Register のコールバックが起動前に走ってプロセスを止められない。
+                if (linkedCts.Token.IsCancellationRequested) { try { proc.Kill(true); } catch { } }
                 proc.BeginErrorReadLine();
                 await proc.WaitForExitAsync(linkedCts.Token);
                 return (proc.ExitCode, stderrBuffer.ToString());
             }
             finally
             {
-                item.ActiveCts = null;
-                item.ActiveProcPid = 0;
+                item.ActiveChatCts = null;
+                item.ActiveChatProcPid = 0;
             }
         }
     }
