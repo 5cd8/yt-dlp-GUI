@@ -1,5 +1,3 @@
-using System.Diagnostics;
-using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace YtGui
@@ -70,7 +68,7 @@ namespace YtGui
             }
             var directory = Path.GetDirectoryName(Path.GetFullPath(ffmpegPath))!;
             var staging = Path.Combine(directory, StagingRootName, "ffmpeg");
-            if (!TryRemoveStaging(directory, staging, name)) return;
+            if (!TryRemoveStaging(staging, name)) return;
             try
             {
                 var current = await RunProcessAsync(ffmpegPath, new[] { "-version" }, VersionTimeout, token).ConfigureAwait(false);
@@ -195,7 +193,7 @@ namespace YtGui
             }
             var directory = Path.GetDirectoryName(Path.GetFullPath(twitchToolPath))!;
             var staging = Path.Combine(directory, StagingRootName, "twitch");
-            if (!TryRemoveStaging(directory, staging, name)) return;
+            if (!TryRemoveStaging(staging, name)) return;
             try
             {
                 // --version は、バージョンを標準エラーにだけ出し、終了コードは1を返す。終了コードは見ない。
@@ -265,7 +263,7 @@ namespace YtGui
 
         // 前回のアプリが途中で終わった残りを、更新が要るかどうかに関わらず消す。消せなければ、同じフォルダを取り合わないよう、その項目を飛ばす。
         // .ytgui-update がディレクトリのときだけ扱う（ファイルのときは、作れなくて後で飛ばす）。
-        bool TryRemoveStaging(string directory, string staging, string toolName)
+        bool TryRemoveStaging(string staging, string toolName)
         {
             try
             {
