@@ -10,7 +10,7 @@ yt-dlpのGUIラッパー（WinForms、`net8.0-windows`）。URLをキューに�
 ## コマンド
 
 ```bash
-dotnet build yt.slnx
+dotnet build YtGui/YtGui.csproj
 dotnet run --project YtGui/YtGui.csproj
 dotnet publish YtGui/YtGui.csproj -c Release -o publish/<フォルダ名>
 ```
