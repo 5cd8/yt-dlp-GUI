@@ -33,7 +33,7 @@ namespace YtGui
         public bool ShouldFetchChatReplayOnly { get; set; }
         public CancellationTokenSource? ActiveCts { get; set; }
         public int ActiveProcPid { get; set; }
-        // 動画取得と同時に動くチャット取得のプロセス用。ActiveCts・ActiveProcPid と共有すると、先に終わったほうの finally が相手のスロットを消してしまう。
+        // チャット取得のプロセス用。動画取得と同時に動くことがあるので、ActiveCts・ActiveProcPid とは分ける（共有すると、先に終わったほうの finally が相手のスロットを消してしまう）。
         public CancellationTokenSource? ActiveChatCts { get; set; }
         public int ActiveChatProcPid { get; set; }
     }
